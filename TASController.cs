@@ -77,6 +77,23 @@ namespace FlippingIsHardTAS
                 _bindMenu.OnImportPlayMacro = () => {
                     if (_macroSystem.HasRecordedData)
                     {
+                        // Populate macro start state from the first recorded tick's data
+                        var firstState = _macroSystem.GetStateAtTick(0);
+                        if (firstState != null && _gameObjectFinder.FindPlayerTransform() != null)
+                        {
+                            var rb = _gameObjectFinder.GetCachedPlayerRigidbody();
+                            var state = new SavestateSystem.SaveStateData(
+                                firstState.Value.PlayerPosition,
+                                firstState.Value.PlayerRotation,
+                                firstState.Value.PlayerVelocity,
+                                firstState.Value.PlayerAngularVelocity,
+                                firstState.Value.CameraRotation,
+                                firstState.Value.CameraPosition,
+                                firstState.Value.CameraPan,
+                                firstState.Value.CameraTilt
+                            );
+                            _savestateSystem.SetMacroState(state, 0);
+                        }
                         _savestateSystem.LoadState(_gameObjectFinder, _timeController, true);
                         Physics.SyncTransforms();
                         StartPlayback();
@@ -328,7 +345,16 @@ namespace FlippingIsHardTAS
         private void ResetTrainer()
         {
             _timeController?.ResetTick();
-            _macroSystem?.Clear();
+            // Don't clear macro data on quick restart — keep recorded inputs for replay
+            if (_macroSystem != null)
+            {
+                if (_macroSystem.IsPlaying)
+                    _macroSystem.StopPlaying();
+                if (_macroSystem.IsRecording)
+                    _macroSystem.StopRecording();
+                if (_macroSystem.IsEditMode)
+                    _macroSystem.ExitEditMode();
+            }
             _savestateSystem?.Clear();
             _gameObjectFinder?.ClearCache();
             _cachedRb = null;

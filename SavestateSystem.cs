@@ -54,6 +54,16 @@ namespace FlippingIsHardTAS
             _hasMacroState = false;
             MacroTick = 0;
         }
+        
+        /// <summary>
+        /// Directly sets the macro start state (used when importing macros).
+        /// </summary>
+        public void SetMacroState(SaveStateData state, ulong tick)
+        {
+            _macroState = state;
+            MacroTick = tick;
+            _hasMacroState = true;
+        }
 
         public void SaveState(GameObjectFinder finder, ulong currentTick, bool isMacroSlot = false)
         {
