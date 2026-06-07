@@ -1086,10 +1086,8 @@ namespace FlippingIsHardTAS
                 var vAxis = orbital.VerticalAxis;
                 vAxis.Value = _macroSystem.GetCurrentCameraTilt();
                 orbital.VerticalAxis = vAxis;
-                
-                TASPlugin.Logger.LogInfo($"[InjectAxes] tick={_timeController.CurrentTick} pan={_macroSystem.GetCurrentCameraPan():F1} tilt={_macroSystem.GetCurrentCameraTilt():F1}");
             }
-            catch (Exception ex) { TASPlugin.Logger.LogWarning($"[InjectAxes] ERROR: {ex.Message}"); }
+            catch { }
         }
         
         private void UpdateCurrentPosition()
