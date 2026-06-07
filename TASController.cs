@@ -52,7 +52,6 @@ namespace FlippingIsHardTAS
                 TASConfig.Load();
                 
                 _gameObjectFinder = gameObjectFinder;
-                _bindMenu = bindMenu;
                 _overlayRenderer = new OverlayRenderer();
                 _overlayRenderer.RefreshKeybinds();
                 
@@ -60,6 +59,16 @@ namespace FlippingIsHardTAS
                 _savestateSystem = new SavestateSystem();
                 _macroSystem = new InputMacroSystem();
                 
+                _bindMenu = bindMenu;
+                _bindMenu.SetMacroSystem(_macroSystem);
+                _bindMenu.OnImportPlayMacro = () => {
+                    if (_macroSystem.HasRecordedData)
+                    {
+                        _savestateSystem.LoadState(_gameObjectFinder, _timeController, true);
+                        Physics.SyncTransforms();
+                        StartPlayback();
+                    }
+                };
                 GameInputPatch.MacroSystem = _macroSystem;
                 FishNetReconcilePatch.MacroSystem = _macroSystem;
                 
@@ -70,6 +79,10 @@ namespace FlippingIsHardTAS
                 // velocity we write in FixedUpdate arrives one frame late and gets overridden
                 // by FishNet's Reconcile. Hooking OnPrePhysicsSimulation fixes this.
                 SubscribeToFishNet();
+                
+                UnityEngine.SceneManagement.SceneManager.add_sceneLoaded(
+                    new System.Action<UnityEngine.SceneManagement.Scene, UnityEngine.SceneManagement.LoadSceneMode>(OnSceneLoaded)
+                );
                 
                 TASPlugin.Logger.LogInfo("TASController initialized successfully");
             }
@@ -129,6 +142,14 @@ namespace FlippingIsHardTAS
                         // This prevents lag spikes (like starting OBS) from causing physics catch-up desyncs.
                         ApplyDeterministicSettings();
                     }
+                }
+                
+                // Ensure we catch situations where _fishNetTimeManager was destroyed by a scene reload
+                if (_isInGame && _fishNetTimeManager != null && _fishNetTimeManager.gameObject == null)
+                {
+                    TASPlugin.Logger.LogInfo("TAS: TimeManager destroyed (QuickRestart detected in Update).");
+                    ResetTrainer();
+                    _fishNetTimeManager = null;
                 }
 
                 // If not in an active game session, do nothing else
@@ -232,6 +253,38 @@ namespace FlippingIsHardTAS
             catch (Exception ex)
             {
                 TASPlugin.Logger.LogError($"Error in TASController.FixedUpdate: {ex}");
+            }
+        }
+
+        private void OnSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
+        {
+            try
+            {
+                if (scene.name == "Scene_Game_NW-DemoLive")
+                {
+                    TASPlugin.Logger.LogInfo("TAS: Scene Loaded (QuickRestart), resetting trainer.");
+                    ResetTrainer();
+                }
+            }
+            catch (Exception ex) {
+                TASPlugin.Logger.LogError($"Error in OnSceneLoaded: {ex}");
+            }
+        }
+
+        private void ResetTrainer()
+        {
+            _timeController?.ResetTick();
+            _macroSystem?.Clear();
+            _savestateSystem?.Clear();
+            _gameObjectFinder?.ClearCache();
+            _cachedRb = null;
+            _fishNetTimeManager = null;
+            ApplyDeterministicSettings();
+            
+            // Force pause on level start/reset so the user has to manually unpause to start the TAS
+            if (_timeController != null && !_timeController.IsPaused)
+            {
+                _timeController.TogglePause();
             }
         }
 

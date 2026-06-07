@@ -11,6 +11,8 @@ A **BepInEx** mod for *Flipping is Hard (Demo)* that adds full TAS (Tool-Assiste
 | 🎥 **Input Recording** | Records every physics tick of movement, look, camera and physics state |
 | ▶ **Deterministic Playback** | Replays inputs with full state injection before each physics tick — no desync |
 | 💾 **Savestates** | Save and load player position / velocity at any moment |
+| 📁 **Macro Export & Import** | Save your recorded TAS runs to disk (`.tas` files) and load them later. Includes an integrated custom naming text field |
+| 🔄 **Quick Restart Hook** | Full compatibility with the game's Quick Restart. The TAS resets and auto-pauses at tick 0 instantly |
 | ⏸ **Pause / Frame Advance** | Pause time and step exactly 1 physics tick per press; hold for 10 ticks/sec |
 | 🐢 **Slow Motion** | Run game at ×0.1 speed; hold boost key for ×0.3 |
 | 🖥 **HUD Overlay** | Always-on display of state, tick counter, speed, position and all keybinds |

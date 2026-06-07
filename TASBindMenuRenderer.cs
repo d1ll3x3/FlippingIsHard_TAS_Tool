@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using BepInEx;
 
 namespace FlippingIsHardTAS
 {
@@ -10,8 +11,8 @@ namespace FlippingIsHardTAS
         private List<MonoBehaviour> _disabledScripts = new List<MonoBehaviour>();
 
         private bool _isVisible = false;
-        // Taller window to fit all 8 binds
-        private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 250, 520, 500);
+        // Taller window to fit all 8 binds and the new Macro section
+        private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 275, 520, 550);
 
         private GUIStyle _titleStyle;
         private GUIStyle _sectionStyle;
@@ -20,6 +21,11 @@ namespace FlippingIsHardTAS
         private Color _defaultBgColor;
 
         private TASSettings _tempSettings;
+        private InputMacroSystem _macroSystem;
+        private string _macroFileName = "default";
+        private bool _isEditingFileName = false;
+        private string _macroStatusMsg = "";
+        private float _macroStatusTimer = 0f;
 
         private string _listeningAction = null;
         private bool _clickHandledThisFrame = false;
@@ -28,11 +34,17 @@ namespace FlippingIsHardTAS
         public static bool IsVisibleGlobally = false;
         public bool IsVisible => _isVisible;
         public Action OnMenuClosed;
+        public Action OnImportPlayMacro;
 
         public TASBindMenuRenderer(GameObjectFinder gameObjectFinder)
         {
             _gameObjectFinder = gameObjectFinder;
             _windowDelegate = new Action<int>(WindowFunction);
+        }
+
+        public void SetMacroSystem(InputMacroSystem sys)
+        {
+            _macroSystem = sys;
         }
 
         public void ToggleVisibility()
@@ -97,6 +109,12 @@ namespace FlippingIsHardTAS
         public void Draw()
         {
             if (!_isVisible) return;
+
+            if (_macroStatusTimer > 0)
+            {
+                _macroStatusTimer -= Time.deltaTime;
+                if (_macroStatusTimer <= 0) _macroStatusMsg = "";
+            }
 
             if (Event.current.type == EventType.Repaint)
                 _clickHandledThisFrame = false;
@@ -202,6 +220,99 @@ namespace FlippingIsHardTAS
             // ── Section: UI ──────────────────────────────────────────
             DrawSectionLabel(cx, ref cy, "INTERFACE");
             DrawBindRow(cx, ref cy, "Open Settings",  "Menu", _tempSettings.OpenBindMenu);
+
+            // ── Section: Macros ──────────────────────────────────────
+            DrawSectionLabel(cx, ref cy, "MACRO FILES");
+            
+            GUI.color = Color.white;
+            GUI.Label(new Rect(cx, cy, 80, 20), "Filename:");
+            
+            // Custom Text Field Implementation
+            Rect txtRect = new Rect(cx + 80, cy, 140, 20);
+            GUI.color = _isEditingFileName ? new Color(0.8f, 1f, 0.8f) : Color.white;
+            GUI.Box(txtRect, _macroFileName);
+            GUI.color = Color.white;
+            
+            // Handle clicking to focus
+            Event currentEvent = Event.current;
+            if (currentEvent.type == EventType.MouseDown)
+            {
+                Rect absTxtRect = new Rect(_windowRect.x + txtRect.x, _windowRect.y + txtRect.y, txtRect.width, txtRect.height);
+                Vector2 rawMouse = Input.mousePosition;
+                rawMouse.y = Screen.height - rawMouse.y;
+                _isEditingFileName = absTxtRect.Contains(rawMouse);
+            }
+            
+            // Handle typing
+            if (_isEditingFileName && currentEvent.type == EventType.KeyDown)
+            {
+                if (currentEvent.keyCode == KeyCode.Backspace)
+                {
+                    if (_macroFileName.Length > 0)
+                        _macroFileName = _macroFileName.Substring(0, _macroFileName.Length - 1);
+                    currentEvent.Use();
+                }
+                else if (currentEvent.keyCode == KeyCode.Return || currentEvent.keyCode == KeyCode.Escape)
+                {
+                    _isEditingFileName = false;
+                    currentEvent.Use();
+                }
+                else if (currentEvent.character != 0)
+                {
+                    char c = currentEvent.character;
+                    if (char.IsLetterOrDigit(c) || c == '_' || c == '-')
+                    {
+                        if (_macroFileName.Length < 25)
+                            _macroFileName += c;
+                    }
+                    currentEvent.Use();
+                }
+            }
+            
+            string path = System.IO.Path.Combine(Paths.PluginPath, "FlippingIsHardTAS", "Macros", $"{_macroFileName}.tas");
+            
+            GUI.backgroundColor = new Color(0.2f, 0.4f, 0.6f, 1f);
+            if (CustomButton(new Rect(cx + 220, cy, 80, 20), "Export"))
+            {
+                if (_macroSystem != null)
+                {
+                    try {
+                        _macroSystem.ExportMacro(path);
+                        _macroStatusMsg = "Exported OK";
+                    } catch (Exception e) {
+                        _macroStatusMsg = "Export Error!";
+                        TASPlugin.Logger.LogError(e.ToString());
+                    }
+                    _macroStatusTimer = 3f;
+                }
+            }
+            
+            GUI.backgroundColor = new Color(0.6f, 0.4f, 0.2f, 1f);
+            if (CustomButton(new Rect(cx + 310, cy, 80, 20), "Import"))
+            {
+                if (_macroSystem != null)
+                {
+                    if (_macroSystem.ImportMacro(path))
+                    {
+                        _macroStatusMsg = "Imported OK";
+                        OnImportPlayMacro?.Invoke();
+                    }
+                    else
+                    {
+                        _macroStatusMsg = "Not Found!";
+                    }
+                    _macroStatusTimer = 3f;
+                }
+            }
+            GUI.backgroundColor = _defaultBgColor;
+            
+            if (!string.IsNullOrEmpty(_macroStatusMsg))
+            {
+                GUI.color = _macroStatusMsg.Contains("OK") ? Color.green : Color.red;
+                GUI.Label(new Rect(cx + 400, cy, 80, 20), _macroStatusMsg);
+                GUI.color = Color.white;
+            }
+            cy += 25;
 
             // Bottom buttons
             float by = _windowRect.height - 45;

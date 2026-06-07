@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -38,7 +38,7 @@ namespace FlippingIsHardTAS
                 return _cachedPlayer;
                 
             // Check cooldown si ha fallado recientemente
-            if (Time.time < _playerSearchCooldown)
+            if (Time.unscaledTime < _playerSearchCooldown)
                 return null;
             
             // Method 1: Try to find by tag
@@ -57,7 +57,7 @@ namespace FlippingIsHardTAS
             }
             
             // Si llegamos aquÃ­, no lo encontrÃ³, aplicamos cooldown de 2 segundos antes de volver a buscar
-            _playerSearchCooldown = Time.time + SEARCH_COOLDOWN_DURATION;
+            _playerSearchCooldown = Time.unscaledTime + SEARCH_COOLDOWN_DURATION;
             _cachedPlayerRigidbody = null;
             return null;
         }
@@ -69,7 +69,7 @@ namespace FlippingIsHardTAS
                 return _cachedCamera;
                 
             // Check cooldown si ha fallado recientemente
-            if (Time.time < _cameraSearchCooldown)
+            if (Time.unscaledTime < _cameraSearchCooldown)
                 return null;
             
             // Method 1: Try to find by tag
@@ -87,7 +87,7 @@ namespace FlippingIsHardTAS
             }
             
             // Si llegamos aquÃ­, no lo encontrÃ³, aplicamos cooldown de 2 segundos antes de volver a buscar
-            _cameraSearchCooldown = Time.time + SEARCH_COOLDOWN_DURATION;
+            _cameraSearchCooldown = Time.unscaledTime + SEARCH_COOLDOWN_DURATION;
             return null;
         }
         
@@ -96,6 +96,8 @@ namespace FlippingIsHardTAS
             _cachedPlayer = null;
             _cachedPlayerRigidbody = null;
             _cachedCamera = null;
+            _playerSearchCooldown = 0f;
+            _cameraSearchCooldown = 0f;
         }
     }
 }

@@ -7,10 +7,20 @@ namespace FlippingIsHardTAS
     {
         public bool IsRecording { get; private set; }
         public bool IsPlaying { get; private set; }
-        public int RNGSeed { get; private set; }
-        public ulong MaxTick { get; private set; }
+        public int RNGSeed { get; set; }
+        public ulong MaxTick { get; set; }
         
         public Dictionary<ulong, TASInputState> RecordedInputs = new Dictionary<ulong, TASInputState>();
+
+        public void ExportMacro(string path)
+        {
+            TASMacroSerializer.ExportToFile(this, path);
+        }
+
+        public bool ImportMacro(string path)
+        {
+            return TASMacroSerializer.ImportFromFile(this, path);
+        }
 
         private TASInputState _currentPlaybackState;
         private TASInputState _previousPlaybackState; // To calculate WasPressed
