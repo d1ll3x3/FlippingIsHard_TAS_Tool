@@ -459,14 +459,21 @@ namespace FlippingIsHardTAS
                     if (!_timeController.IsPaused)
                         _timeController.TogglePause();
                     
-                    // ENTER Edit Mode: stop playback, capture camera, start recording,
-                    // then do the proven camera restore (same as savestate R key).
-                    // Don't use the savestate system directly to avoid overwriting user data.
+                    // DEBUG: log camera state BEFORE any changes
+                    LogCameraState("[EditMode] BEFORE");
+                    
                     SavestateSystem.SaveStateData snap = CaptureCameraSnapshot();
+                    TASPlugin.Logger.LogInfo($"[EditMode] SNAPSHOT: pos={snap?.CameraPosition} rot={snap?.CameraRotation.eulerAngles} pan={snap?.CameraPan} tilt={snap?.CameraTilt}");
+                    
                     StopPlayback();
+                    LogCameraState("[EditMode] AFTER StopPlayback");
+                    
                     _macroSystem.EnterEditMode(_timeController.CurrentTick);
+                    LogCameraState("[EditMode] AFTER EnterEditMode");
+                    
                     if (snap != null)
                         StartCameraRestoreFromState(snap);
+                    LogCameraState("[EditMode] AFTER StartCameraRestore (override active)");
                     
                     TASPlugin.Logger.LogInfo($"TAS: Edit Mode ON at tick {_timeController.CurrentTick}");
                 }
@@ -1002,6 +1009,40 @@ namespace FlippingIsHardTAS
                 orbital.VerticalAxis = vAxis;
             }
             catch { } // Silent — sync is best-effort
+        }
+        
+        private void LogCameraState(string tag)
+        {
+            try
+            {
+                var cam = Camera.main;
+                var playerTransform = _gameObjectFinder?.FindPlayerTransform();
+                Vector3 playerPos = playerTransform != null ? playerTransform.position : Vector3.zero;
+                
+                float pan = 0f, tilt = 0f;
+                if (playerTransform != null)
+                {
+                    var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                    if (movement != null && movement.camManager != null)
+                    {
+                        var cinCam = movement.camManager.MainCinemachineCamera;
+                        if (cinCam != null)
+                        {
+                            var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
+                            if (orbital != null)
+                            {
+                                pan = orbital.HorizontalAxis.Value;
+                                tilt = orbital.VerticalAxis.Value;
+                            }
+                            var brain = cam?.GetComponent<Unity.Cinemachine.CinemachineBrain>();
+                            TASPlugin.Logger.LogInfo($"{tag} camPos={cam?.transform.position} camRot={cam?.transform.rotation.eulerAngles} playerPos={playerPos} pan={pan} tilt={tilt} brainEnabled={brain?.enabled}");
+                            return;
+                        }
+                    }
+                }
+                TASPlugin.Logger.LogInfo($"{tag} camPos={cam?.transform.position} camRot={cam?.transform.rotation.eulerAngles} playerPos={playerPos} pan={pan} tilt={tilt}");
+            }
+            catch { }
         }
         
         private void UpdateCurrentPosition()
