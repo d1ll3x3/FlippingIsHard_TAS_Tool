@@ -818,6 +818,18 @@ namespace FlippingIsHardTAS
                 }
                 Physics.SyncTransforms();
                 
+                // Also restore camera to the rewinded tick's position
+                if (Camera.main != null)
+                {
+                    Camera.main.transform.position = state.Value.CameraPosition;
+                    Quaternion camRot = state.Value.CameraRotation;
+                    camRot.Normalize();
+                    Camera.main.transform.rotation = camRot;
+                }
+                
+                // Restore orbital axes to match
+                InjectAxesFromState(state.Value);
+                
                 // Update tick
                 _timeController.SetTick(targetTick);
                 
@@ -867,6 +879,40 @@ namespace FlippingIsHardTAS
                 float tilt = _macroSystem.GetCurrentCameraTilt();
                 if (!float.IsNaN(tilt) && !float.IsInfinity(tilt))
                 {
+                    vAxis.Value = tilt;
+                    orbital.VerticalAxis = vAxis;
+                }
+            }
+            catch { }
+        }
+        
+        /// <summary>
+        /// Injects CameraPan/CameraTilt from a TASInputState into CinemachineOrbitalFollow.
+        /// </summary>
+        private void InjectAxesFromState(TASInputState state)
+        {
+            try
+            {
+                var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                if (playerTransform == null) return;
+                var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                if (movement == null || movement.camManager == null) return;
+                var cinCam = movement.camManager.MainCinemachineCamera;
+                if (cinCam == null) return;
+                var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
+                if (orbital == null) return;
+                
+                float pan = state.CameraPan;
+                float tilt = state.CameraTilt;
+                if (!float.IsNaN(pan) && !float.IsInfinity(pan))
+                {
+                    var hAxis = orbital.HorizontalAxis;
+                    hAxis.Value = pan;
+                    orbital.HorizontalAxis = hAxis;
+                }
+                if (!float.IsNaN(tilt) && !float.IsInfinity(tilt))
+                {
+                    var vAxis = orbital.VerticalAxis;
                     vAxis.Value = tilt;
                     orbital.VerticalAxis = vAxis;
                 }
