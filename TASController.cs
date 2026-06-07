@@ -477,21 +477,14 @@ namespace FlippingIsHardTAS
                     if (!_timeController.IsPaused)
                         _timeController.TogglePause();
                     
-                    // DEBUG: log camera state BEFORE any changes
-                    LogCameraState("[EditMode] BEFORE");
-                    
-                    SavestateSystem.SaveStateData snap = CaptureCameraSnapshot();
-                    TASPlugin.Logger.LogInfo($"[EditMode] SNAPSHOT: pos={snap?.CameraPosition} rot={snap?.CameraRotation.eulerAngles} pan={snap?.CameraPan} tilt={snap?.CameraTilt}");
-                    
+                    // EXACT SAME FLOW as savestate load (R key):
+                    // Save → StopPlayback → Load → SyncTransforms → StartCameraRestore → EnterEditMode
+                    _savestateSystem.SaveState(_gameObjectFinder, _timeController.CurrentTick, false);
                     StopPlayback();
-                    LogCameraState("[EditMode] AFTER StopPlayback");
-                    
+                    _savestateSystem.LoadState(_gameObjectFinder, _timeController, false);
+                    Physics.SyncTransforms();
+                    StartCameraRestore(_gameObjectFinder);
                     _macroSystem.EnterEditMode(_timeController.CurrentTick);
-                    LogCameraState("[EditMode] AFTER EnterEditMode");
-                    
-                    if (snap != null)
-                        StartCameraRestoreFromState(snap);
-                    LogCameraState("[EditMode] AFTER StartCameraRestore (override active)");
                     
                     TASPlugin.Logger.LogInfo($"TAS: Edit Mode ON at tick {_timeController.CurrentTick}");
                 }
