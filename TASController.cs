@@ -21,6 +21,7 @@ namespace FlippingIsHardTAS
         private bool _wasPausePressed = false;
         private bool _wasSlowMoPressed = false;
         private bool _wasFrameAdvancePressed = false;
+        private bool _wasEditModePressed = false;
 
         // Component references
         private GameObjectFinder _gameObjectFinder;
@@ -440,6 +441,26 @@ namespace FlippingIsHardTAS
                 }
             }
 
+            // ── Edit Macro (F8): cut playback at current tick and start re-recording ──
+            bool isEditModePressed = TASConfig.Settings.EditMacro.IsPressed();
+            
+            if (isEditModePressed && !_wasEditModePressed)
+            {
+                if (_macroSystem.IsPlaying)
+                {
+                    // ENTER Edit Mode: stop playback, keep prefix, start recording
+                    StopPlayback();
+                    _macroSystem.EnterEditMode(_timeController.CurrentTick);
+                    TASPlugin.Logger.LogInfo($"TAS: Edit Mode ON at tick {_timeController.CurrentTick}");
+                }
+                else if (_macroSystem.IsEditMode)
+                {
+                    // EXIT Edit Mode: stop recording
+                    _macroSystem.ExitEditMode();
+                    TASPlugin.Logger.LogInfo("TAS: Edit Mode OFF — macro updated.");
+                }
+            }
+
             // ── TAS Playback Controls ──────────────────────────────────────
             bool isPausePressed       = TASConfig.Settings.Pause.IsPressed();
             bool isSlowMoPressed      = TASConfig.Settings.SlowMo.IsPressed();
@@ -469,6 +490,7 @@ namespace FlippingIsHardTAS
             _wasPausePressed      = isPausePressed;
             _wasSlowMoPressed     = isSlowMoPressed;
             _wasFrameAdvancePressed = isFrameAdvancePressed;
+            _wasEditModePressed = isEditModePressed;
         }
         
         private void StartPlayback()
@@ -718,7 +740,8 @@ namespace FlippingIsHardTAS
                 _timeController.IsPaused,
                 _timeController.CurrentTick,
                 _timeController.IsSlowMo,
-                _timeController.IsSlowMoBoost
+                _timeController.IsSlowMoBoost,
+                _macroSystem.IsEditMode
             );
         }
         

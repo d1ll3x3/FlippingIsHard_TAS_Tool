@@ -7,6 +7,7 @@ namespace FlippingIsHardTAS
     {
         public bool IsRecording { get; private set; }
         public bool IsPlaying { get; private set; }
+        public bool IsEditMode { get; private set; }
         public int RNGSeed { get; set; }
         public ulong MaxTick { get; set; }
         
@@ -28,6 +29,7 @@ namespace FlippingIsHardTAS
         public void Clear()
         {
             IsRecording = false;
+            IsEditMode = false;
             RecordedInputs.Clear();
             _currentPlaybackState = default;
             _previousPlaybackState = default;
@@ -49,6 +51,51 @@ namespace FlippingIsHardTAS
         {
             IsRecording = false;
             TASPlugin.Logger.LogInfo("TAS: Stopped Recording");
+        }
+        
+        /// <summary>
+        /// Enters Edit Mode: stops playback, preserves all macro data BEFORE the given tick,
+        /// deletes everything from this tick onward, and starts recording the user's real inputs.
+        /// This allows editing a macro from a specific point without losing earlier work.
+        /// </summary>
+        public void EnterEditMode(ulong currentTick)
+        {
+            // Stop playback and re-enable real input devices
+            IsPlaying = false;
+            IsEditMode = true;
+            EnableInputSystemDevices();
+            
+            // Delete all recorded inputs from currentTick onward
+            var keysToRemove = new List<ulong>();
+            foreach (var kvp in RecordedInputs)
+            {
+                if (kvp.Key >= currentTick)
+                    keysToRemove.Add(kvp.Key);
+            }
+            foreach (var key in keysToRemove)
+                RecordedInputs.Remove(key);
+            
+            // Update MaxTick to the last remaining tick
+            MaxTick = 0;
+            foreach (var kvp in RecordedInputs)
+            {
+                if (kvp.Key > MaxTick) MaxTick = kvp.Key;
+            }
+            
+            // Start recording from this point (don't clear data!)
+            IsRecording = true;
+            TASPlugin.Logger.LogInfo($"TAS: Entered Edit Mode at tick {currentTick} — kept {RecordedInputs.Count} previous ticks, now recording.");
+        }
+        
+        /// <summary>
+        /// Exits Edit Mode: stops recording user inputs. The macro now contains
+        /// the original prefix + the newly recorded suffix.
+        /// </summary>
+        public void ExitEditMode()
+        {
+            IsRecording = false;
+            IsEditMode = false;
+            TASPlugin.Logger.LogInfo($"TAS: Exited Edit Mode. Macro has {RecordedInputs.Count} total ticks (MaxTick={MaxTick}).");
         }
         
         public void StartPlaying()

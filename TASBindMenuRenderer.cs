@@ -12,7 +12,7 @@ namespace FlippingIsHardTAS
 
         private bool _isVisible = false;
         // Taller window to fit all 8 binds and the new Macro section
-        private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 275, 520, 550);
+        private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 290, 520, 580);
 
         private GUIStyle _titleStyle;
         private GUIStyle _sectionStyle;
@@ -79,6 +79,7 @@ namespace FlippingIsHardTAS
             Teleport      = src.Teleport.Clone(),
             RecordMacro   = src.RecordMacro.Clone(),
             PlayMacro     = src.PlayMacro.Clone(),
+            EditMacro     = src.EditMacro.Clone(),
             OpenBindMenu  = src.OpenBindMenu.Clone(),
             Pause         = src.Pause.Clone(),
             SlowMo        = src.SlowMo.Clone(),
@@ -181,6 +182,7 @@ namespace FlippingIsHardTAS
                 case "Teleport":     _tempSettings.Teleport     = new KeyBind(main, mod); break;
                 case "Record":       _tempSettings.RecordMacro  = new KeyBind(main, mod); break;
                 case "Play":         _tempSettings.PlayMacro    = new KeyBind(main, mod); break;
+                case "EditMacro":    _tempSettings.EditMacro    = new KeyBind(main, mod); break;
                 case "Menu":         _tempSettings.OpenBindMenu = new KeyBind(main, mod); break;
                 case "Pause":        _tempSettings.Pause        = new KeyBind(main, mod); break;
                 case "SlowMo":       _tempSettings.SlowMo       = new KeyBind(main, mod); break;
@@ -209,6 +211,7 @@ namespace FlippingIsHardTAS
             DrawSectionLabel(cx, ref cy, "MACRO");
             DrawBindRow(cx, ref cy, "Record Macro",   "Record",  _tempSettings.RecordMacro);
             DrawBindRow(cx, ref cy, "Play Macro",     "Play",    _tempSettings.PlayMacro);
+            DrawBindRow(cx, ref cy, "Edit Macro",     "EditMacro", _tempSettings.EditMacro);
 
             // ── Section: Playback Controls ────────────────────────────────
             DrawSectionLabel(cx, ref cy, "PLAYBACK CONTROLS");

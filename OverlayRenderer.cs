@@ -12,6 +12,7 @@ namespace FlippingIsHardTAS
         private bool _isPaused = false;
         private bool _isSlowMo = false;
         private bool _isSlowMoBoost = false;
+        private bool _isEditMode = false;
         private ulong _currentTick = 0;
         private bool _showOverlay = true;
 
@@ -49,7 +50,7 @@ namespace FlippingIsHardTAS
 
         public void UpdateData(Vector3 pos, float speed, bool hasSaved, bool isRecording,
                                bool isPlaying, bool isPaused, ulong currentTick,
-                               bool isSlowMo = false, bool isSlowMoBoost = false)
+                               bool isSlowMo = false, bool isSlowMoBoost = false, bool isEditMode = false)
         {
             if (_cachedCoords == null || Vector3.Distance(_currentPosition, pos) > 0.05f)
             {
@@ -71,6 +72,7 @@ namespace FlippingIsHardTAS
             _isPaused         = isPaused;
             _isSlowMo         = isSlowMo;
             _isSlowMoBoost    = isSlowMoBoost;
+            _isEditMode       = isEditMode;
             _currentTick      = currentTick;
             _showOverlay      = Application.isFocused;
         }
@@ -133,7 +135,7 @@ namespace FlippingIsHardTAS
             float sectionH = 20f;
             float totalH = 35  // header + tick + state
                          + sectionH + lineH * 2  // savestate section
-                         + sectionH + lineH * 2  // macro section
+                         + sectionH + lineH * 3  // macro section (Record, Play, Edit)
                          + sectionH + lineH * 3  // playback section
                          + sectionH + lineH       // ui section
                          + 14;                    // padding
@@ -157,7 +159,11 @@ namespace FlippingIsHardTAS
 
             string stateStr;
             Color stateColor;
-            if (_isRecording)
+            if (_isEditMode)
+            {
+                stateStr = "✎ EDIT (REC)"; stateColor = new Color(1f, 0.5f, 0f, 1f); // orange
+            }
+            else if (_isRecording)
             {
                 stateStr = "● REC"; stateColor = _recColor;
             }
@@ -211,6 +217,7 @@ namespace FlippingIsHardTAS
                 $"[{s.RecordMacro}] Record",
                 $"[{s.PlayMacro}] Play / Stop",
                 _isRecording ? _recColor : (_isPlaying ? _playColor : Color.white));
+            DrawKeySingle(cx, ref cy, $"[{s.EditMacro}] Edit Macro", _isEditMode ? new Color(1f, 0.5f, 0f) : _dimColor);
 
             // ── Playback Controls ────────────────────────────────────────
             DrawSectionLabel(cx, ref cy, "PLAYBACK CONTROLS");
