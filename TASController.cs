@@ -196,6 +196,10 @@ namespace FlippingIsHardTAS
                         Camera.main.transform.rotation = state.CameraRotation;
                     }
                     
+                    // Keep orbital axes synced to the camera transform during override,
+                    // so when Brain re-enables they're consistent (no glitch).
+                    SyncOrbitalAxesToCamera();
+                    
                     _cameraOverrideFramesLeft--;
                     if (_cameraOverrideFramesLeft <= 0)
                     {
@@ -279,10 +283,6 @@ namespace FlippingIsHardTAS
                             Camera.main.transform.rotation = _macroSystem.GetCurrentCameraRotation();
                             Camera.main.transform.position = _macroSystem.GetCurrentCameraPosition();
                         }
-                        
-                        // Sync orbital axes to match Camera.main.transform so that
-                        // if we enter Edit Mode, axes and camera are consistent.
-                        SyncOrbitalAxesToCamera();
                     }
                 }
             }
