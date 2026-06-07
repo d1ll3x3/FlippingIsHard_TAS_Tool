@@ -279,6 +279,10 @@ namespace FlippingIsHardTAS
                             Camera.main.transform.rotation = _macroSystem.GetCurrentCameraRotation();
                             Camera.main.transform.position = _macroSystem.GetCurrentCameraPosition();
                         }
+                        
+                        // Sync orbital axes to match Camera.main.transform so that
+                        // if we enter Edit Mode, axes and camera are consistent.
+                        SyncOrbitalAxesToCamera();
                     }
                 }
             }
@@ -684,7 +688,9 @@ namespace FlippingIsHardTAS
                             null, new Type[] { typeof(Vector3), typeof(Quaternion) }, null);
                         if (method != null && Camera.main != null)
                         {
-                            method.Invoke(_overrideCinCam, new object[] { Camera.main.transform.position, Camera.main.transform.rotation });
+                            Quaternion rot = Camera.main.transform.rotation;
+                            rot.Normalize();
+                            method.Invoke(_overrideCinCam, new object[] { Camera.main.transform.position, rot });
                             TASPlugin.Logger.LogInfo("[CamRestore] ForceCameraPosition called successfully.");
                         }
                     }
@@ -858,8 +864,12 @@ namespace FlippingIsHardTAS
                                     System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
                                     null, new Type[] { typeof(Vector3), typeof(Quaternion) }, null);
                                 if (method != null && Camera.main != null)
+                                {
+                                    Quaternion rot = Camera.main.transform.rotation;
+                                    rot.Normalize();
                                     method.Invoke(cinCam, new object[] { 
-                                        Camera.main.transform.position, Camera.main.transform.rotation });
+                                        Camera.main.transform.position, rot });
+                                }
                             }
                             catch { }
                             
@@ -980,6 +990,50 @@ namespace FlippingIsHardTAS
             {
                 TASPlugin.Logger.LogWarning($"[CamRestore] Could not compute orbital axes: {ex.Message}");
             }
+        }
+        
+        /// <summary>
+        /// Syncs CinemachineOrbitalFollow's HorizontalAxis/VerticalAxis to match
+        /// the current Camera.main.transform. Called every FixedUpdate during
+        /// macro playback to keep axes consistent with the directly-written camera.
+        /// </summary>
+        private void SyncOrbitalAxesToCamera()
+        {
+            try
+            {
+                if (Camera.main == null) return;
+                var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                if (playerTransform == null) return;
+                var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                if (movement == null || movement.camManager == null) return;
+                var cinCam = movement.camManager.MainCinemachineCamera;
+                if (cinCam == null) return;
+                var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
+                if (orbital == null) return;
+                
+                Transform followTarget = cinCam.Follow;
+                if (followTarget == null) followTarget = playerTransform;
+                
+                // Get TargetOffset
+                Vector3 targetOffset = Vector3.zero;
+                try { targetOffset = orbital.TargetOffset; } catch { }
+                
+                Vector3 orbitCenter = followTarget.position + targetOffset;
+                Vector3 direction = Camera.main.transform.position - orbitCenter;
+                
+                float horizontal = Mathf.Atan2(direction.x, direction.z) * Mathf.Rad2Deg;
+                float horizontalDist = new Vector3(direction.x, 0, direction.z).magnitude;
+                float vertical = -Mathf.Atan2(direction.y, horizontalDist) * Mathf.Rad2Deg;
+                
+                var hAxis = orbital.HorizontalAxis;
+                hAxis.Value = horizontal;
+                orbital.HorizontalAxis = hAxis;
+                
+                var vAxis = orbital.VerticalAxis;
+                vAxis.Value = vertical;
+                orbital.VerticalAxis = vAxis;
+            }
+            catch { } // Silent — sync is best-effort
         }
         
         private void UpdateCurrentPosition()
