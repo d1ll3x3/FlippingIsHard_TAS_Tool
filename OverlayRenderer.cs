@@ -136,7 +136,7 @@ namespace FlippingIsHardTAS
             float totalH = 35  // header + tick + state
                          + sectionH + lineH * 2  // savestate section
                          + sectionH + lineH * 3  // macro section (Record, Play, Edit)
-                         + sectionH + lineH * 3  // playback section
+                         + sectionH + lineH * 4  // playback section (Pause, FrameAdv, Rewind, SlowMo)
                          + sectionH + lineH       // ui section
                          + 14;                    // padding
 
@@ -223,6 +223,7 @@ namespace FlippingIsHardTAS
             DrawSectionLabel(cx, ref cy, "PLAYBACK CONTROLS");
             DrawKeySingle(cx, ref cy, $"[{s.Pause}] Pause / Resume", _isPaused ? _pauseColor : _dimColor);
             DrawKeySingle(cx, ref cy, $"[{s.FrameAdvance}] Frame Advance  (hold = 10/s)", _isPaused ? _keyColor : _dimColor);
+            DrawKeySingle(cx, ref cy, $"[{s.RewindTick}] Rewind Tick  (hold = 10/s)", _isPaused ? _keyColor : _dimColor);
 
             // SlowMo row + optional boost hint below it (shown only when slowmo active)
             DrawKeySingle(cx, ref cy, $"[{s.SlowMo}] Slow Motion (×0.1)", _isSlowMo ? _playColor : _dimColor);

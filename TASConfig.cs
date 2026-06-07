@@ -84,6 +84,7 @@ namespace FlippingIsHardTAS
         public KeyBind RecordMacro    { get; set; } = new KeyBind(KeyCode.F9);
         public KeyBind PlayMacro      { get; set; } = new KeyBind(KeyCode.F10);
         public KeyBind EditMacro      { get; set; } = new KeyBind(KeyCode.F8);
+        public KeyBind RewindTick     { get; set; } = new KeyBind(KeyCode.Comma);
         public KeyBind OpenBindMenu   { get; set; } = new KeyBind(KeyCode.B);
         public KeyBind Pause          { get; set; } = new KeyBind(KeyCode.F11);
         public KeyBind SlowMo         { get; set; } = new KeyBind(KeyCode.F12);

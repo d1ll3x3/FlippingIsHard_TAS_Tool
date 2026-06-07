@@ -22,6 +22,8 @@ namespace FlippingIsHardTAS
         private bool _wasSlowMoPressed = false;
         private bool _wasFrameAdvancePressed = false;
         private bool _wasEditModePressed = false;
+        private bool _wasRewindPressed = false;
+        private float _lastRewindTime = 0f;
 
         // Component references
         private GameObjectFinder _gameObjectFinder;
@@ -45,6 +47,7 @@ namespace FlippingIsHardTAS
         private int _cameraOverrideFramesLeft = 0;
         private Unity.Cinemachine.CinemachineCamera _overrideCinCam;
         private Unity.Cinemachine.CinemachineInputAxisController _overrideInputAxisCtrl;
+        private SavestateSystem.SaveStateData _overrideCameraState; // custom state for edit mode
         private const int CAMERA_OVERRIDE_FRAMES = 5;
         
         public bool enabled { get; set; }
@@ -186,7 +189,7 @@ namespace FlippingIsHardTAS
                 // we write Camera.main.transform directly every frame.
                 if (_cameraOverrideActive)
                 {
-                    SavestateSystem.SaveStateData state = _savestateSystem.GetLastLoadedState();
+                    SavestateSystem.SaveStateData state = _overrideCameraState ?? _savestateSystem.GetLastLoadedState();
                     if (state != null && Camera.main != null)
                     {
                         Camera.main.transform.position = state.CameraPosition;
@@ -345,7 +348,7 @@ namespace FlippingIsHardTAS
             // doesn't have a chance to trigger camera recalculation with stale data.
             if (_cameraOverrideActive)
             {
-                SavestateSystem.SaveStateData state = _savestateSystem.GetLastLoadedState();
+                SavestateSystem.SaveStateData state = _overrideCameraState ?? _savestateSystem.GetLastLoadedState();
                 if (state != null && Camera.main != null)
                 {
                     Camera.main.transform.position = state.CameraPosition;
@@ -448,9 +451,25 @@ namespace FlippingIsHardTAS
             {
                 if (_macroSystem.IsPlaying)
                 {
-                    // ENTER Edit Mode: stop playback, keep prefix, start recording
-                    StopPlayback();
+                    // ENTER Edit Mode:
+                    // 1. Capture camera snapshot BEFORE touching anything
+                    // 2. Manually stop playback BUT keep Brain disabled (avoid the 1-frame glitch)
+                    // 3. Enter edit mode (starts recording)
+                    // 4. Restore camera via the standard override → re-enables Brain cleanly
+                    SavestateSystem.SaveStateData cameraSnap = CaptureCameraSnapshot();
+                    
+                    // Stop playback manually WITHOUT re-enabling CinemachineBrain
+                    _macroSystem.StopPlaying();
+                    if (_cachedRb != null)
+                        _cachedRb.interpolation = _originalInterpolation;
+                    // NOTE: NOT calling ToggleCinemachine(true) — Brain stays disabled
+                    
                     _macroSystem.EnterEditMode(_timeController.CurrentTick);
+                    
+                    // Restore camera to avoid the jump when Brain re-enables
+                    if (cameraSnap != null)
+                        StartCameraRestoreFromState(cameraSnap);
+                    
                     TASPlugin.Logger.LogInfo($"TAS: Edit Mode ON at tick {_timeController.CurrentTick}");
                 }
                 else if (_macroSystem.IsEditMode)
@@ -482,6 +501,33 @@ namespace FlippingIsHardTAS
             if (isFrameAdvancePressed)
                 _timeController.TickFrameAdvance(justPressed: !_wasFrameAdvancePressed);
 
+            // ── Rewind: go back 1 tick (press) or 10/sec (hold) during paused replay ──
+            bool isRewindPressed = TASConfig.Settings.RewindTick.IsPressed();
+            if (isRewindPressed && _timeController.IsPaused && _macroSystem.HasRecordedData && _timeController.CurrentTick > 0)
+            {
+                // Only rewind on press, not hold — or do 10/sec like frame advance
+                bool shouldRewind = !_wasRewindPressed; // first press
+                if (!shouldRewind)
+                {
+                    // Hold repeat: 10/sec
+                    float now = Time.unscaledTime;
+                    if (now - _lastRewindTime >= 0.1f)
+                    {
+                        shouldRewind = true;
+                        _lastRewindTime = now;
+                    }
+                }
+                else
+                {
+                    _lastRewindTime = Time.unscaledTime;
+                }
+                
+                if (shouldRewind)
+                {
+                    RewindOneTick();
+                }
+            }
+
             _wasTeleportPressed   = isTeleportPressed;
             _wasSavePressed       = isSavePressed;
             _wasRecordPressed     = isRecordPressed;
@@ -491,6 +537,7 @@ namespace FlippingIsHardTAS
             _wasSlowMoPressed     = isSlowMoPressed;
             _wasFrameAdvancePressed = isFrameAdvancePressed;
             _wasEditModePressed = isEditModePressed;
+            _wasRewindPressed = isRewindPressed;
         }
         
         private void StartPlayback()
@@ -612,6 +659,7 @@ namespace FlippingIsHardTAS
             try
             {
                 _cameraOverrideActive = false;
+                _overrideCameraState = null; // clear custom state
                 
                 // Re-inject orbital axes so Cinemachine's internal state
                 // matches Camera.main.transform when Brain re-enables
@@ -713,6 +761,152 @@ namespace FlippingIsHardTAS
             catch (Exception ex)
             {
                 TASPlugin.Logger.LogError($"Error injecting orbital axes: {ex}");
+            }
+        }
+        
+        /// <summary>
+        /// Captures current Camera.main transform + orbital axis values into a SaveStateData.
+        /// Used when entering Edit Mode to snapshot the camera before stopping playback.
+        /// </summary>
+        private SavestateSystem.SaveStateData CaptureCameraSnapshot()
+        {
+            try
+            {
+                Quaternion camRot = Camera.main != null ? Camera.main.transform.rotation : Quaternion.identity;
+                Vector3 camPos = Camera.main != null ? Camera.main.transform.position : Vector3.zero;
+                
+                float pan = 0f, tilt = 0f;
+                var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                if (playerTransform != null)
+                {
+                    var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                    if (movement != null && movement.camManager != null)
+                    {
+                        var cinCam = movement.camManager.MainCinemachineCamera;
+                        if (cinCam != null)
+                        {
+                            var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
+                            if (orbital != null)
+                            {
+                                pan = orbital.HorizontalAxis.Value;
+                                tilt = orbital.VerticalAxis.Value;
+                            }
+                        }
+                    }
+                }
+                
+                return new SavestateSystem.SaveStateData(
+                    Vector3.zero, Quaternion.identity, Vector3.zero, Vector3.zero,
+                    camRot, camPos, pan, tilt);
+            }
+            catch (Exception ex)
+            {
+                TASPlugin.Logger.LogError($"Error capturing camera snapshot: {ex}");
+                return null;
+            }
+        }
+        
+        /// <summary>
+        /// Same as StartCameraRestore but takes a pre-built SaveStateData instead of
+        /// reading from the savestate system. Used for Edit Mode camera transition.
+        /// </summary>
+        private void StartCameraRestoreFromState(SavestateSystem.SaveStateData state)
+        {
+            try
+            {
+                if (state == null) return;
+                
+                // Disable CinemachineBrain (same as macros)
+                ToggleCinemachine(false);
+                
+                // Inject orbital axes
+                InjectOrbitalAxes(state, _gameObjectFinder);
+                
+                // Write camera transform directly
+                if (Camera.main != null)
+                {
+                    Camera.main.transform.position = state.CameraPosition;
+                    Camera.main.transform.rotation = state.CameraRotation;
+                }
+                
+                // Disable InputAxisController during override
+                var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                if (playerTransform != null)
+                {
+                    var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                    if (movement != null && movement.camManager != null)
+                    {
+                        var cinCam = movement.camManager.MainCinemachineCamera;
+                        if (cinCam != null)
+                        {
+                            _overrideCinCam = cinCam;
+                            var axisCtrl = cinCam.GetComponent<Unity.Cinemachine.CinemachineInputAxisController>();
+                            if (axisCtrl == null && movement.camManager.axisSettingsSync != null)
+                                axisCtrl = movement.camManager.axisSettingsSync.axisController;
+                            if (axisCtrl != null)
+                            {
+                                axisCtrl.enabled = false;
+                                _overrideInputAxisCtrl = axisCtrl;
+                            }
+                        }
+                    }
+                }
+                
+                _cameraOverrideFramesLeft = CAMERA_OVERRIDE_FRAMES;
+                _cameraOverrideActive = true;
+                _overrideCameraState = state; // store for Update/OnPostTick override loop
+                
+                TASPlugin.Logger.LogInfo($"[EditMode] Camera snapshot restored, overriding for {CAMERA_OVERRIDE_FRAMES} frames.");
+            }
+            catch (Exception ex)
+            {
+                TASPlugin.Logger.LogError($"Error in StartCameraRestoreFromState: {ex}");
+                ToggleCinemachine(true);
+                _cameraOverrideActive = false;
+            }
+        }
+        
+        /// <summary>
+        /// Rewinds one tick during paused replay by loading the recorded physics state
+        /// from the macro data at (currentTick - 1).
+        /// </summary>
+        private void RewindOneTick()
+        {
+            try
+            {
+                if (_cachedRb == null) _cachedRb = _gameObjectFinder.GetCachedPlayerRigidbody();
+                if (_cachedRb == null) return;
+                
+                ulong targetTick = _timeController.CurrentTick - 1;
+                var state = _macroSystem.GetStateAtTick(targetTick);
+                if (state == null) return;
+                
+                // Apply physics state
+                _cachedRb.position = state.Value.PlayerPosition;
+                _cachedRb.rotation = state.Value.PlayerRotation;
+                _cachedRb.linearVelocity = state.Value.PlayerVelocity;
+                _cachedRb.angularVelocity = state.Value.PlayerAngularVelocity;
+                
+                var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                if (playerTransform != null)
+                {
+                    playerTransform.position = state.Value.PlayerPosition;
+                    playerTransform.rotation = state.Value.PlayerRotation;
+                }
+                Physics.SyncTransforms();
+                
+                // Update tick
+                _timeController.SetTick(targetTick);
+                
+                // If replaying, update macro playback state so next frame-advance picks up correctly
+                if (_macroSystem.IsPlaying)
+                {
+                    _macroSystem.PlaybackTick(targetTick);
+                }
+            }
+            catch (Exception ex)
+            {
+                TASPlugin.Logger.LogError($"Error rewinding tick: {ex}");
             }
         }
         

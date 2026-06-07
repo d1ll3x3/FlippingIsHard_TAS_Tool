@@ -12,7 +12,7 @@ namespace FlippingIsHardTAS
 
         private bool _isVisible = false;
         // Taller window to fit all 8 binds and the new Macro section
-        private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 290, 520, 580);
+        private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 305, 520, 610);
 
         private GUIStyle _titleStyle;
         private GUIStyle _sectionStyle;
@@ -80,6 +80,7 @@ namespace FlippingIsHardTAS
             RecordMacro   = src.RecordMacro.Clone(),
             PlayMacro     = src.PlayMacro.Clone(),
             EditMacro     = src.EditMacro.Clone(),
+            RewindTick    = src.RewindTick.Clone(),
             OpenBindMenu  = src.OpenBindMenu.Clone(),
             Pause         = src.Pause.Clone(),
             SlowMo        = src.SlowMo.Clone(),
@@ -183,6 +184,7 @@ namespace FlippingIsHardTAS
                 case "Record":       _tempSettings.RecordMacro  = new KeyBind(main, mod); break;
                 case "Play":         _tempSettings.PlayMacro    = new KeyBind(main, mod); break;
                 case "EditMacro":    _tempSettings.EditMacro    = new KeyBind(main, mod); break;
+                case "RewindTick":   _tempSettings.RewindTick   = new KeyBind(main, mod); break;
                 case "Menu":         _tempSettings.OpenBindMenu = new KeyBind(main, mod); break;
                 case "Pause":        _tempSettings.Pause        = new KeyBind(main, mod); break;
                 case "SlowMo":       _tempSettings.SlowMo       = new KeyBind(main, mod); break;
@@ -219,6 +221,7 @@ namespace FlippingIsHardTAS
             DrawBindRow(cx, ref cy, "Slow Motion (×0.1)",   "SlowMo",       _tempSettings.SlowMo);
             DrawBindRow(cx, ref cy, "  └ Boost (hold=×0.3)","SlowMoBoost",  _tempSettings.SlowMoBoost);
             DrawBindRow(cx, ref cy, "Frame Advance",        "FrameAdvance", _tempSettings.FrameAdvance);
+            DrawBindRow(cx, ref cy, "Rewind Tick",          "RewindTick",   _tempSettings.RewindTick);
 
             // ── Section: UI ──────────────────────────────────────────
             DrawSectionLabel(cx, ref cy, "INTERFACE");
