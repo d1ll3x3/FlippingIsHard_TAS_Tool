@@ -107,6 +107,13 @@ namespace FlippingIsHardTAS
             }
         }
 
+        public TASInputState? GetStateAtTick(ulong tick)
+        {
+            if (RecordedInputs.TryGetValue(tick, out var state))
+                return state;
+            return null;
+        }
+
         public Vector2 GetCurrentMoveInput()
         {
             return _currentPlaybackState.Move;

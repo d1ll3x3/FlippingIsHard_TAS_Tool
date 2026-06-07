@@ -188,12 +188,17 @@ namespace FlippingIsHardTAS
         }
 
         // Called by FishNet TimeManager BEFORE PhysX simulates the current tick.
-        // We inject the COMPLETE recorded state here so physics starts from the exact
-        // same position/rotation/velocity as during recording.
-        // This means FishNet Reconcile has nothing to correct (state is already right),
-        // and no teleportation happens after physics — allowing RigidbodyInterpolation
-        // to work cleanly for smooth visuals between 50Hz ticks.
         private void OnPrePhysicsSimulation(float delta)
+        {
+            // Empty. We no longer inject state here because it overwrites forces applied 
+            // by the character controller in FixedUpdate, which causes massive desyncs.
+        }
+
+        // OnPostTick: runs after physics simulation and FishNet Reconcile.
+        // We compare the physics result with the RECORDED state for the NEXT tick.
+        // If there's a drift (desync), we snap it back. Because we use an epsilon,
+        // we avoid assigning to rb.position when deterministic, keeping RigidbodyInterpolation smooth.
+        private void OnPostTick()
         {
             try
             {
@@ -201,24 +206,29 @@ namespace FlippingIsHardTAS
                 if (_cachedRb == null) return;
                 if (_macroSystem == null || !_macroSystem.IsPlaying) return;
 
-                // Full state injection before physics:
-                _cachedRb.position        = _macroSystem.GetCurrentPlayerPosition();
-                _cachedRb.rotation        = _macroSystem.GetCurrentPlayerRotation();
-                _cachedRb.linearVelocity  = _macroSystem.GetCurrentPlayerVelocity();
-                _cachedRb.angularVelocity = _macroSystem.GetCurrentPlayerAngularVelocity();
+                var nextState = _macroSystem.GetStateAtTick(_timeController.CurrentTick + 1);
+                if (nextState != null)
+                {
+                    var ns = nextState.Value;
+                    
+                    // Fallback threshold to correct desyncs ONLY if physics deviated from the recording.
+                    if (Vector3.Distance(_cachedRb.position, ns.PlayerPosition) > 0.001f)
+                        _cachedRb.position = ns.PlayerPosition;
+
+                    if (Quaternion.Angle(_cachedRb.rotation, ns.PlayerRotation) > 0.1f)
+                        _cachedRb.rotation = ns.PlayerRotation;
+
+                    if (Vector3.Distance(_cachedRb.linearVelocity, ns.PlayerVelocity) > 0.01f)
+                        _cachedRb.linearVelocity = ns.PlayerVelocity;
+
+                    if (Vector3.Distance(_cachedRb.angularVelocity, ns.PlayerAngularVelocity) > 0.01f)
+                        _cachedRb.angularVelocity = ns.PlayerAngularVelocity;
+                }
             }
             catch (Exception ex)
             {
-                TASPlugin.Logger.LogError($"Error in OnPrePhysicsSimulation: {ex}");
+                TASPlugin.Logger.LogError($"Error in OnPostTick: {ex}");
             }
-        }
-
-        // OnPostTick: previously used to teleport rb after FishNet Reconcile.
-        // Now that we inject full state BEFORE physics, Reconcile has nothing to
-        // correct — no teleportation needed here, allowing smooth interpolation.
-        private void OnPostTick()
-        {
-            // Intentionally empty. Full state is handled in OnPrePhysicsSimulation.
         }
 
         
