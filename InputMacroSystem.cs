@@ -184,7 +184,11 @@ namespace FlippingIsHardTAS
         public Quaternion GetCurrentCameraRotation()
         {
             if (IsPlaying && HasRecordedData)
-                return _currentPlaybackState.CameraRotation;
+            {
+                var q = _currentPlaybackState.CameraRotation;
+                q.Normalize();
+                return q;
+            }
             
             if (Camera.main != null)
                 return Camera.main.transform.rotation;
@@ -195,7 +199,11 @@ namespace FlippingIsHardTAS
         public Quaternion GetInterpolatedCameraRotation(float t)
         {
             if (IsPlaying && HasRecordedData)
-                return Quaternion.SlerpUnclamped(_previousPlaybackState.CameraRotation, _currentPlaybackState.CameraRotation, t);
+            {
+                var q = Quaternion.SlerpUnclamped(_previousPlaybackState.CameraRotation, _currentPlaybackState.CameraRotation, t);
+                q.Normalize();
+                return q;
+            }
             
             return GetCurrentCameraRotation();
         }

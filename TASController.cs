@@ -77,26 +77,13 @@ namespace FlippingIsHardTAS
                 _bindMenu.OnImportPlayMacro = () => {
                     if (_macroSystem.HasRecordedData)
                     {
-                        // Populate macro start state from the first recorded tick's data
-                        var firstState = _macroSystem.GetStateAtTick(0);
-                        if (firstState != null && _gameObjectFinder.FindPlayerTransform() != null)
-                        {
-                            var rb = _gameObjectFinder.GetCachedPlayerRigidbody();
-                            var state = new SavestateSystem.SaveStateData(
-                                firstState.Value.PlayerPosition,
-                                firstState.Value.PlayerRotation,
-                                firstState.Value.PlayerVelocity,
-                                firstState.Value.PlayerAngularVelocity,
-                                firstState.Value.CameraRotation,
-                                firstState.Value.CameraPosition,
-                                firstState.Value.CameraPan,
-                                firstState.Value.CameraTilt
-                            );
-                            _savestateSystem.SetMacroState(state, 0);
-                        }
+                        // For imported macros, ensure macro state exists (save current pos if not set)
+                        if (!_savestateSystem.HasMacroState)
+                            _savestateSystem.SaveState(_gameObjectFinder, _timeController.CurrentTick, true);
                         _savestateSystem.LoadState(_gameObjectFinder, _timeController, true);
                         Physics.SyncTransforms();
                         StartPlayback();
+                        _bindMenu.RequestClose();
                     }
                 };
                 GameInputPatch.MacroSystem = _macroSystem;
@@ -223,7 +210,9 @@ namespace FlippingIsHardTAS
                 if (_macroSystem != null && _macroSystem.IsPlaying && Camera.main != null)
                 {
                     float t = (Time.time - Time.fixedTime) / Time.fixedDeltaTime;
-                    Camera.main.transform.rotation = _macroSystem.GetInterpolatedCameraRotation(t);
+                    Quaternion rot = _macroSystem.GetInterpolatedCameraRotation(t);
+                    rot.Normalize();
+                    Camera.main.transform.rotation = rot;
                     Camera.main.transform.position = _macroSystem.GetInterpolatedCameraPosition(t);
                 }
                 
@@ -312,7 +301,9 @@ namespace FlippingIsHardTAS
 
                         if (Camera.main != null)
                         {
-                            Camera.main.transform.rotation = _macroSystem.GetCurrentCameraRotation();
+                            Quaternion rot = _macroSystem.GetCurrentCameraRotation();
+                            rot.Normalize();
+                            Camera.main.transform.rotation = rot;
                             Camera.main.transform.position = _macroSystem.GetCurrentCameraPosition();
                         }
                         
@@ -345,17 +336,13 @@ namespace FlippingIsHardTAS
         private void ResetTrainer()
         {
             _timeController?.ResetTick();
-            // Don't clear macro data on quick restart — keep recorded inputs for replay
+            // Don't clear macro data OR savestate on quick restart — keep everything for replay
             if (_macroSystem != null)
             {
-                if (_macroSystem.IsPlaying)
-                    _macroSystem.StopPlaying();
-                if (_macroSystem.IsRecording)
-                    _macroSystem.StopRecording();
-                if (_macroSystem.IsEditMode)
-                    _macroSystem.ExitEditMode();
+                if (_macroSystem.IsPlaying) _macroSystem.StopPlaying();
+                if (_macroSystem.IsRecording) _macroSystem.StopRecording();
+                if (_macroSystem.IsEditMode) _macroSystem.ExitEditMode();
             }
-            _savestateSystem?.Clear();
             _gameObjectFinder?.ClearCache();
             _cachedRb = null;
             _fishNetTimeManager = null;
@@ -869,12 +856,20 @@ namespace FlippingIsHardTAS
                 if (orbital == null) return;
                 
                 var hAxis = orbital.HorizontalAxis;
-                hAxis.Value = _macroSystem.GetCurrentCameraPan();
-                orbital.HorizontalAxis = hAxis;
+                float pan = _macroSystem.GetCurrentCameraPan();
+                if (!float.IsNaN(pan) && !float.IsInfinity(pan))
+                {
+                    hAxis.Value = pan;
+                    orbital.HorizontalAxis = hAxis;
+                }
                 
                 var vAxis = orbital.VerticalAxis;
-                vAxis.Value = _macroSystem.GetCurrentCameraTilt();
-                orbital.VerticalAxis = vAxis;
+                float tilt = _macroSystem.GetCurrentCameraTilt();
+                if (!float.IsNaN(tilt) && !float.IsInfinity(tilt))
+                {
+                    vAxis.Value = tilt;
+                    orbital.VerticalAxis = vAxis;
+                }
             }
             catch { }
         }

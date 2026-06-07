@@ -11,6 +11,7 @@ namespace FlippingIsHardTAS
         private List<MonoBehaviour> _disabledScripts = new List<MonoBehaviour>();
 
         private bool _isVisible = false;
+        private bool _pendingClose = false;
         // Taller window to fit all 8 binds and the new Macro section
         private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 305, 520, 610);
 
@@ -110,6 +111,14 @@ namespace FlippingIsHardTAS
 
         public void Draw()
         {
+            // Handle deferred close (requested from inside Draw callback)
+            if (_pendingClose)
+            {
+                _pendingClose = false;
+                CloseMenu();
+                return;
+            }
+            
             if (!_isVisible) return;
 
             if (_macroStatusTimer > 0)
@@ -377,6 +386,14 @@ namespace FlippingIsHardTAS
             return false;
         }
 
+        /// <summary>
+        /// Request menu close on the next frame (safe to call from button callbacks).
+        /// </summary>
+        public void RequestClose()
+        {
+            _pendingClose = true;
+        }
+        
         private void CloseMenu()
         {
             _isVisible = false;
