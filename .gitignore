@@ -16,5 +16,6 @@ TAS_backup_*/
 .DS_Store
 Thumbs.db
 
-# BepInEx game-side files (not part of source)
+# BepInEx / game reference DLLs (proprietary — not redistributable)
 libs/
+lib/
