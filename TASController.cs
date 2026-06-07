@@ -1007,8 +1007,10 @@ namespace FlippingIsHardTAS
                 var vAxis = orbital.VerticalAxis;
                 vAxis.Value = vertical;
                 orbital.VerticalAxis = vAxis;
+                
+                TASPlugin.Logger.LogInfo($"[SyncAxes] SET pan={horizontal} tilt={vertical} dir=({direction.x:F1},{direction.y:F1},{direction.z:F1})");
             }
-            catch { } // Silent — sync is best-effort
+            catch (Exception ex) { TASPlugin.Logger.LogWarning($"[SyncAxes] ERROR: {ex.Message}"); }
         }
         
         private void LogCameraState(string tag)
