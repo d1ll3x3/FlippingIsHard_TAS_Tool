@@ -283,7 +283,12 @@ namespace FlippingIsHardTAS
                 {
                     if (_timeController.CurrentTick > _macroSystem.MaxTick)
                     {
+                        // Playback ended naturally — save camera snapshot before stopping
+                        // so the camera stays at the final position (same restore as savestate).
+                        SavestateSystem.SaveStateData endSnap = CaptureCurrentCameraState();
                         StopPlayback();
+                        if (endSnap != null)
+                            StartCameraRestoreFromSnapshot(endSnap);
                     }
                     else
                     {
@@ -454,7 +459,10 @@ namespace FlippingIsHardTAS
             {
                 if (_macroSystem.IsPlaying)
                 {
+                    SavestateSystem.SaveStateData endSnap = CaptureCurrentCameraState();
                     StopPlayback();
+                    if (endSnap != null)
+                        StartCameraRestoreFromSnapshot(endSnap);
                 }
                 else if (_macroSystem.HasRecordedData)
                 {
@@ -847,6 +855,85 @@ namespace FlippingIsHardTAS
                 var vAxis = orbital.VerticalAxis;
                 vAxis.Value = _macroSystem.GetCurrentCameraTilt();
                 orbital.VerticalAxis = vAxis;
+            }
+            catch { }
+        }
+        
+        /// <summary>
+        /// Captures current Camera.main.transform + orbital axes into a SaveStateData.
+        /// </summary>
+        private SavestateSystem.SaveStateData CaptureCurrentCameraState()
+        {
+            try
+            {
+                Quaternion camRot = Camera.main != null ? Camera.main.transform.rotation : Quaternion.identity;
+                Vector3 camPos = Camera.main != null ? Camera.main.transform.position : Vector3.zero;
+                float pan = 0f, tilt = 0f;
+                
+                var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                if (playerTransform != null)
+                {
+                    var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                    if (movement != null && movement.camManager != null)
+                    {
+                        var cinCam = movement.camManager.MainCinemachineCamera;
+                        if (cinCam != null)
+                        {
+                            var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
+                            if (orbital != null)
+                            {
+                                pan = orbital.HorizontalAxis.Value;
+                                tilt = orbital.VerticalAxis.Value;
+                            }
+                        }
+                    }
+                }
+                return new SavestateSystem.SaveStateData(
+                    Vector3.zero, Quaternion.identity, Vector3.zero, Vector3.zero,
+                    camRot, camPos, pan, tilt);
+            }
+            catch { return null; }
+        }
+        
+        /// <summary>
+        /// Starts camera override using a snapshot, same as StartCameraRestore but
+        /// using the given state instead of the savestate system.
+        /// </summary>
+        private void StartCameraRestoreFromSnapshot(SavestateSystem.SaveStateData state)
+        {
+            try
+            {
+                if (state == null) return;
+                ToggleCinemachine(false);
+                InjectOrbitalAxes(state, _gameObjectFinder);
+                if (Camera.main != null)
+                {
+                    Camera.main.transform.position = state.CameraPosition;
+                    Camera.main.transform.rotation = state.CameraRotation;
+                }
+                
+                // Find cinCam for FinalizeCameraRestore
+                var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                if (playerTransform != null)
+                {
+                    var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                    if (movement != null && movement.camManager != null)
+                    {
+                        _overrideCinCam = movement.camManager.MainCinemachineCamera;
+                        var axisCtrl = _overrideCinCam?.GetComponent<Unity.Cinemachine.CinemachineInputAxisController>();
+                        if (axisCtrl == null && movement.camManager.axisSettingsSync != null)
+                            axisCtrl = movement.camManager.axisSettingsSync.axisController;
+                        if (axisCtrl != null)
+                        {
+                            axisCtrl.enabled = false;
+                            _overrideInputAxisCtrl = axisCtrl;
+                        }
+                    }
+                }
+                
+                _cameraOverrideFramesLeft = CAMERA_OVERRIDE_FRAMES;
+                _cameraOverrideActive = true;
+                _overrideCameraState = state;
             }
             catch { }
         }
