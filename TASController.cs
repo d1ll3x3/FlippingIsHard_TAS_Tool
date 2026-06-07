@@ -793,10 +793,10 @@ namespace FlippingIsHardTAS
                             var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
                             if (orbital != null)
                             {
-                                // Compute orbital axes FROM the camera transform (not read them,
-                                // because during macro playback Camera.main.transform is written
-                                // directly and the orbital axes may be out of sync).
-                                ComputeOrbitalAxesFromCamera(cinCam, camPos, out pan, out tilt);
+                                // Read axes directly (same as savestate SaveState).
+                                // ForceCameraPosition will sync any discrepancy with Camera.main.transform.
+                                pan = orbital.HorizontalAxis.Value;
+                                tilt = orbital.VerticalAxis.Value;
                             }
                         }
                     }
@@ -836,7 +836,8 @@ namespace FlippingIsHardTAS
                     Camera.main.transform.rotation = state.CameraRotation;
                 }
                 
-                // Disable InputAxisController during override
+                // Find CinemachineCamera, call ForceCameraPosition to sync internals,
+                // and disable InputAxisController during override
                 var playerTransform = _gameObjectFinder.FindPlayerTransform();
                 if (playerTransform != null)
                 {
@@ -847,6 +848,21 @@ namespace FlippingIsHardTAS
                         if (cinCam != null)
                         {
                             _overrideCinCam = cinCam;
+                            
+                            // ForceCameraPosition syncs ALL internal state (orbital axes, damping, etc.)
+                            // to the camera transform we just wrote — critical for zero-glitch transition.
+                            cinCam.PreviousStateIsValid = false;
+                            try
+                            {
+                                var method = cinCam.GetType().GetMethod("ForceCameraPosition",
+                                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
+                                    null, new Type[] { typeof(Vector3), typeof(Quaternion) }, null);
+                                if (method != null && Camera.main != null)
+                                    method.Invoke(cinCam, new object[] { 
+                                        Camera.main.transform.position, Camera.main.transform.rotation });
+                            }
+                            catch { }
+                            
                             var axisCtrl = cinCam.GetComponent<Unity.Cinemachine.CinemachineInputAxisController>();
                             if (axisCtrl == null && movement.camManager.axisSettingsSync != null)
                                 axisCtrl = movement.camManager.axisSettingsSync.axisController;
@@ -861,9 +877,9 @@ namespace FlippingIsHardTAS
                 
                 _cameraOverrideFramesLeft = CAMERA_OVERRIDE_FRAMES;
                 _cameraOverrideActive = true;
-                _overrideCameraState = state; // store for Update/OnPostTick override loop
+                _overrideCameraState = state;
                 
-                TASPlugin.Logger.LogInfo($"[EditMode] Camera snapshot restored, overriding for {CAMERA_OVERRIDE_FRAMES} frames.");
+                TASPlugin.Logger.LogInfo($"[EditMode] Camera snapshot restored, ForceCameraPosition called, overriding for {CAMERA_OVERRIDE_FRAMES} frames.");
             }
             catch (Exception ex)
             {
