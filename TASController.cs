@@ -37,6 +37,15 @@ namespace FlippingIsHardTAS
         private Rigidbody _cachedRb;
         private RigidbodyInterpolation _originalInterpolation;
         
+        // Camera override state — used when loading a savestate.
+        // EXACT same approach as macros: disable CinemachineBrain, then write
+        // Camera.main.transform directly every frame for N frames, then re-enable Brain.
+        private bool _cameraOverrideActive = false;
+        private int _cameraOverrideFramesLeft = 0;
+        private Unity.Cinemachine.CinemachineCamera _overrideCinCam;
+        private Unity.Cinemachine.CinemachineInputAxisController _overrideInputAxisCtrl;
+        private const int CAMERA_OVERRIDE_FRAMES = 5;
+        
         public bool enabled { get; set; }
         
         // FishNet TimeManager reference (hooked in Initialize, unhooked on cleanup)
@@ -170,6 +179,25 @@ namespace FlippingIsHardTAS
                 }
 
                 HandleHotkeys();
+
+                // Camera override for savestate load.
+                // EXACT same approach as macro playback: Brain is disabled,
+                // we write Camera.main.transform directly every frame.
+                if (_cameraOverrideActive)
+                {
+                    SavestateSystem.SaveStateData state = _savestateSystem.GetLastLoadedState();
+                    if (state != null && Camera.main != null)
+                    {
+                        Camera.main.transform.position = state.CameraPosition;
+                        Camera.main.transform.rotation = state.CameraRotation;
+                    }
+                    
+                    _cameraOverrideFramesLeft--;
+                    if (_cameraOverrideFramesLeft <= 0)
+                    {
+                        FinalizeCameraRestore();
+                    }
+                }
 
                 if (_macroSystem != null && _macroSystem.IsPlaying && Camera.main != null)
                 {
@@ -312,9 +340,18 @@ namespace FlippingIsHardTAS
 
         private void OnPostTick()
         {
-            // Empty
+            // Keep writing camera transform during override so FishNet reconcile
+            // doesn't have a chance to trigger camera recalculation with stale data.
+            if (_cameraOverrideActive)
+            {
+                SavestateSystem.SaveStateData state = _savestateSystem.GetLastLoadedState();
+                if (state != null && Camera.main != null)
+                {
+                    Camera.main.transform.position = state.CameraPosition;
+                    Camera.main.transform.rotation = state.CameraRotation;
+                }
+            }
         }
-
         
         public void OnGUI()
         {
@@ -356,12 +393,15 @@ namespace FlippingIsHardTAS
             }
 
             // Load Position (Manual)
-            if (isTeleportPressed && !_wasTeleportPressed && !isSavePressed)
+            bool isShiftPressed = UnityEngine.Input.GetKey(UnityEngine.KeyCode.LeftShift) || UnityEngine.Input.GetKey(UnityEngine.KeyCode.RightShift);
+            
+            if (isTeleportPressed && !_wasTeleportPressed && !isSavePressed && !isShiftPressed)
             {
                 if (_savestateSystem.HasSavedState)
                 {
                     _savestateSystem.LoadState(_gameObjectFinder, _timeController, false);
                     Physics.SyncTransforms();
+                    StartCameraRestore(_gameObjectFinder);
                 }
             }
 
@@ -394,6 +434,8 @@ namespace FlippingIsHardTAS
                 {
                     _savestateSystem.LoadState(_gameObjectFinder, _timeController, true);
                     Physics.SyncTransforms();
+                    // Macro playback disables Brain itself via ToggleCinemachine(false)
+                    // in StartPlayback(), so no camera override needed here.
                     StartPlayback();
                 }
             }
@@ -469,6 +511,186 @@ namespace FlippingIsHardTAS
             catch (Exception ex)
             {
                 TASPlugin.Logger.LogError($"Error toggling Cinemachine: {ex}");
+            }
+        }
+        
+        /// <summary>
+        /// EXACT SAME approach as macros: disable CinemachineBrain, then write
+        /// Camera.main.transform directly every frame. This bypasses ALL Cinemachine
+        /// internals (PanTilt, InputAxisController, damping, etc.) — same as macro playback.
+        /// ALSO injects the saved orbital axis values into CinemachineOrbitalFollow
+        /// so that when Brain re-enables, it computes the correct rotation.
+        /// </summary>
+        private void StartCameraRestore(GameObjectFinder finder)
+        {
+            try
+            {
+                SavestateSystem.SaveStateData state = _savestateSystem.GetLastLoadedState();
+                if (state == null) return;
+                
+                // ── Step 1: Disable CinemachineBrain (exact same as macros) ──
+                ToggleCinemachine(false);
+                
+                // ── Step 2: Inject saved orbital angles into CinemachineOrbitalFollow ──
+                //    This ensures that when Brain re-enables, Cinemachine's internal
+                //    state matches the camera transform we're about to write.
+                InjectOrbitalAxes(state, finder);
+                
+                // ── Step 3: Write camera transform DIRECTLY (exact same as macros) ──
+                if (Camera.main != null)
+                {
+                    Camera.main.transform.position = state.CameraPosition;
+                    Camera.main.transform.rotation = state.CameraRotation;
+                }
+                
+                // ── Step 4: Also disable InputAxisController so it doesn't
+                //    accumulate mouse input while brain is disabled ──
+                var playerTransform = finder.FindPlayerTransform();
+                if (playerTransform != null)
+                {
+                    var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                    if (movement != null && movement.camManager != null)
+                    {
+                        var cinCam = movement.camManager.MainCinemachineCamera;
+                        if (cinCam != null)
+                        {
+                            _overrideCinCam = cinCam;
+                            
+                            var axisCtrl = cinCam.GetComponent<Unity.Cinemachine.CinemachineInputAxisController>();
+                            if (axisCtrl == null && movement.camManager.axisSettingsSync != null)
+                                axisCtrl = movement.camManager.axisSettingsSync.axisController;
+                            
+                            if (axisCtrl != null)
+                            {
+                                axisCtrl.enabled = false;
+                                _overrideInputAxisCtrl = axisCtrl;
+                                TASPlugin.Logger.LogInfo($"[CamRestore] Brain DISABLED, orbital axes injected. Writing camera transform for {CAMERA_OVERRIDE_FRAMES} frames.");
+                            }
+                            else
+                            {
+                                TASPlugin.Logger.LogWarning("[CamRestore] Brain DISABLED but InputAxisController not found.");
+                            }
+                        }
+                    }
+                }
+                
+                _cameraOverrideFramesLeft = CAMERA_OVERRIDE_FRAMES;
+                _cameraOverrideActive = true;
+            }
+            catch (Exception ex)
+            {
+                TASPlugin.Logger.LogError($"Error starting camera restore: {ex}");
+                ToggleCinemachine(true); // re-enable brain on error
+                _cameraOverrideActive = false;
+            }
+        }
+        
+        private void FinalizeCameraRestore()
+        {
+            try
+            {
+                _cameraOverrideActive = false;
+                
+                // Re-inject orbital axes so Cinemachine's internal state
+                // matches Camera.main.transform when Brain re-enables
+                SavestateSystem.SaveStateData state = _savestateSystem.GetLastLoadedState();
+                if (state != null)
+                    InjectOrbitalAxes(state, _gameObjectFinder);
+                
+                // Clear damping history so Cinemachine starts fresh from current camera state
+                if (_overrideCinCam != null)
+                {
+                    _overrideCinCam.PreviousStateIsValid = false;
+                    
+                    // Try ForceCameraPosition (Cinemachine 3.x) via reflection
+                    try
+                    {
+                        var method = _overrideCinCam.GetType().GetMethod("ForceCameraPosition",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                        if (method != null && Camera.main != null)
+                        {
+                            method.Invoke(_overrideCinCam, new object[] { Camera.main.transform.position, Camera.main.transform.rotation });
+                            TASPlugin.Logger.LogInfo("[CamRestore] ForceCameraPosition called successfully.");
+                        }
+                    }
+                    catch { }
+                }
+                
+                // Re-enable InputAxisController
+                if (_overrideInputAxisCtrl != null)
+                    _overrideInputAxisCtrl.enabled = true;
+                
+                // Re-enable CinemachineBrain LAST (exact same pattern as StopPlayback)
+                ToggleCinemachine(true);
+                
+                TASPlugin.Logger.LogInfo("[CamRestore] Finalized — Brain re-enabled, Cinemachine takes over now.");
+            }
+            catch (Exception ex)
+            {
+                TASPlugin.Logger.LogError($"Error finalizing camera restore: {ex}");
+                if (_overrideInputAxisCtrl != null)
+                    _overrideInputAxisCtrl.enabled = true;
+                ToggleCinemachine(true);
+                _cameraOverrideActive = false;
+            }
+        }
+        
+        /// <summary>
+        /// Injects saved pan/tilt values into CinemachineOrbitalFollow's
+        /// HorizontalAxis and VerticalAxis. This ensures Cinemachine's internal
+        /// state matches our saved camera rotation when Brain re-enables.
+        /// </summary>
+        private void InjectOrbitalAxes(SavestateSystem.SaveStateData state, GameObjectFinder finder)
+        {
+            try
+            {
+                var playerTransform = finder.FindPlayerTransform();
+                if (playerTransform == null) return;
+                
+                var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                if (movement == null || movement.camManager == null) return;
+                
+                var cinCam = movement.camManager.MainCinemachineCamera;
+                if (cinCam == null) return;
+                
+                var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
+                if (orbital != null)
+                {
+                    var hAxis = orbital.HorizontalAxis;
+                    hAxis.Value = state.CameraPan;
+                    orbital.HorizontalAxis = hAxis;
+                    
+                    var vAxis = orbital.VerticalAxis;
+                    vAxis.Value = state.CameraTilt;
+                    orbital.VerticalAxis = vAxis;
+                    
+                    TASPlugin.Logger.LogInfo($"[CamRestore] Injected orbital axes: pan={state.CameraPan} tilt={state.CameraTilt}");
+                }
+                else
+                {
+                    // Fallback: try CinemachinePanTilt
+                    var panTilt = cinCam.GetComponent<Unity.Cinemachine.CinemachinePanTilt>();
+                    if (panTilt != null)
+                    {
+                        var pAxis = panTilt.PanAxis;
+                        pAxis.Value = state.CameraPan;
+                        panTilt.PanAxis = pAxis;
+                        
+                        var tAxis = panTilt.TiltAxis;
+                        tAxis.Value = state.CameraTilt;
+                        panTilt.TiltAxis = tAxis;
+                        
+                        TASPlugin.Logger.LogInfo($"[CamRestore] Injected PanTilt axes: pan={state.CameraPan} tilt={state.CameraTilt}");
+                    }
+                    else
+                    {
+                        TASPlugin.Logger.LogWarning("[CamRestore] No orbital or PanTilt component found for axis injection!");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TASPlugin.Logger.LogError($"Error injecting orbital axes: {ex}");
             }
         }
         

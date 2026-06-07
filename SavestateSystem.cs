@@ -15,8 +15,10 @@ namespace FlippingIsHardTAS
             public Vector3 PlayerAngularVelocity;
             public Quaternion CameraRotation;
             public Vector3 CameraPosition;
+            public float CameraPan;
+            public float CameraTilt;
 
-            public SaveStateData(Vector3 pos, Quaternion rot, Vector3 vel, Vector3 angVel, Quaternion camRot, Vector3 camPos)
+            public SaveStateData(Vector3 pos, Quaternion rot, Vector3 vel, Vector3 angVel, Quaternion camRot, Vector3 camPos, float pan = 0f, float tilt = 0f)
             {
                 PlayerPosition = pos;
                 PlayerRotation = rot;
@@ -24,6 +26,8 @@ namespace FlippingIsHardTAS
                 PlayerAngularVelocity = angVel;
                 CameraRotation = camRot;
                 CameraPosition = camPos;
+                CameraPan = pan;
+                CameraTilt = tilt;
             }
         }
 
@@ -38,6 +42,10 @@ namespace FlippingIsHardTAS
         private SaveStateData _macroState;
         public ulong MacroTick { get; private set; } = 0;
         public bool HasMacroState => _hasMacroState;
+        
+        // Last loaded state — used by TASController to retrieve camera data for restore
+        private SaveStateData _lastLoadedState;
+        public SaveStateData GetLastLoadedState() => _lastLoadedState;
 
         public void Clear()
         {
@@ -56,9 +64,6 @@ namespace FlippingIsHardTAS
                 {
                     var rb = finder.GetCachedPlayerRigidbody();
                     
-                    // CRITICAL: Always save from rb.position, not transform.position.
-                    // The Rigidbody center of mass can differ from the Transform pivot.
-                    // Saving from transform and restoring to rb creates a constant offset desync.
                     Vector3 pos = rb != null ? rb.position : playerTransform.position;
                     Quaternion rot = rb != null ? rb.rotation : playerTransform.rotation;
                     Vector3 vel = rb != null ? rb.linearVelocity : Vector3.zero;
@@ -66,7 +71,63 @@ namespace FlippingIsHardTAS
 
                     Quaternion camRot = Camera.main != null ? Camera.main.transform.rotation : Quaternion.identity;
                     Vector3 camPos = Camera.main != null ? Camera.main.transform.position : Vector3.zero;
-                    var state = new SaveStateData(pos, rot, vel, angVel, camRot, camPos);
+                    
+                    float pan = 0f;
+                    float tilt = 0f;
+                    var movement = playerTransform.GetComponent<PlayerMovement>();
+                    if (movement != null && movement.camManager != null)
+                    {
+                        var cinCam = movement.camManager.MainCinemachineCamera;
+                        if (cinCam != null)
+                        {
+                            // Log ALL components using Il2Cpp type names for accuracy
+                            var comps = cinCam.GetComponents<Component>();
+                            var compNames = new System.Text.StringBuilder();
+                            foreach (var c in comps)
+                            {
+                                if (c != null) 
+                                {
+                                    compNames.Append(c.GetType().FullName + " | ");
+                                }
+                            }
+                            TASPlugin.Logger.LogInfo($"[SaveState] CinemachineCamera '{cinCam.name}' components: {compNames}");
+
+                            var panTilt = cinCam.GetComponent<Unity.Cinemachine.CinemachinePanTilt>();
+                            var pov = cinCam.GetComponent<Unity.Cinemachine.CinemachinePOV>();
+                            var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
+
+                            if (panTilt != null)
+                            {
+                                pan = panTilt.PanAxis.Value;
+                                tilt = panTilt.TiltAxis.Value;
+                                TASPlugin.Logger.LogInfo($"[SaveState] PanTilt FOUND: pan={pan} tilt={tilt}");
+                            }
+                            else if (pov != null)
+                            {
+                                TASPlugin.Logger.LogInfo($"[SaveState] POV FOUND");
+                            }
+                            else if (orbital != null)
+                            {
+                                pan = orbital.HorizontalAxis.Value;
+                                tilt = orbital.VerticalAxis.Value;
+                                TASPlugin.Logger.LogInfo($"[SaveState] OrbitalFollow: pan(HorizontalAxis)={pan} tilt(VerticalAxis)={tilt}");
+                            }
+                            else
+                            {
+                                TASPlugin.Logger.LogWarning("[SaveState] No known rotation component (PanTilt/POV/Orbital) found on cinCam!");
+                            }
+                        }
+                        else
+                        {
+                            TASPlugin.Logger.LogWarning("[SaveState] MainCinemachineCamera is null!");
+                        }
+                    }
+                    else
+                    {
+                        TASPlugin.Logger.LogWarning($"[SaveState] movement={movement != null} camManager={(movement != null ? movement.camManager != null : false)}");
+                    }
+
+                    var state = new SaveStateData(pos, rot, vel, angVel, camRot, camPos, pan, tilt);
 
                     if (isMacroSlot)
                     {
@@ -97,38 +158,29 @@ namespace FlippingIsHardTAS
 
             try
             {
-                SaveStateData state = isMacroSlot ? _macroState : _savedState;
-
+                var state = isMacroSlot ? _macroState : _savedState;
+                _lastLoadedState = state;
                 var playerTransform = finder.FindPlayerTransform();
                 if (playerTransform != null)
                 {
                     var rb = finder.GetCachedPlayerRigidbody();
                     if (rb != null)
                     {
-                        // CRITICAL: Only write to rb — do NOT also write to playerTransform.
-                        // Two conflicting position writes cause PhysX to place the body incorrectly.
-                        // Unity will sync the Transform from the Rigidbody automatically.
                         rb.position = state.PlayerPosition;
                         rb.rotation = state.PlayerRotation;
                         rb.linearVelocity = state.PlayerVelocity;
                         rb.angularVelocity = state.PlayerAngularVelocity;
+                        
+                        playerTransform.position = state.PlayerPosition;
+                        playerTransform.rotation = state.PlayerRotation;
+                        Physics.SyncTransforms();
+                        
+                        TASPlugin.Logger.LogInfo($"[Savestate] Restored: pos={state.PlayerPosition} vel={state.PlayerVelocity} pan={state.CameraPan} tilt={state.CameraTilt}");
                     }
                     else
                     {
-                        // Fallback if no rigidbody
                         playerTransform.position = state.PlayerPosition;
                         playerTransform.rotation = state.PlayerRotation;
-                    }
-
-                    // Reset Camera Position/Rotation
-                    var movement = playerTransform.GetComponent<PlayerMovement>();
-                    if (movement != null && movement.camManager != null)
-                    {
-                        var cinCam = movement.camManager.MainCinemachineCamera;
-                        if (cinCam != null)
-                        {
-                            cinCam.ForceCameraPosition(state.CameraPosition, state.CameraRotation);
-                        }
                     }
                 }
                 
