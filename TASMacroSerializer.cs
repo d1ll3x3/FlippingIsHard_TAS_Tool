@@ -6,7 +6,7 @@ namespace FlippingIsHardTAS
 {
     public static class TASMacroSerializer
     {
-        private const string MAGIC_HEADER = "TAS1";
+        private const string MAGIC_HEADER = "TAS2";
 
         public static void ExportToFile(InputMacroSystem sys, string filePath)
         {
@@ -46,6 +46,9 @@ namespace FlippingIsHardTAS
                     WriteQuaternion(writer, state.PlayerRotation);
                     WriteVector3(writer, state.PlayerVelocity);
                     WriteVector3(writer, state.PlayerAngularVelocity);
+                    
+                    writer.Write(state.CameraPan);
+                    writer.Write(state.CameraTilt);
                 }
             }
         }
@@ -88,8 +91,11 @@ namespace FlippingIsHardTAS
                     Quaternion pRot = ReadQuaternion(reader);
                     Vector3 pVel = ReadVector3(reader);
                     Vector3 pAngVel = ReadVector3(reader);
+                    
+                    float camPan = reader.ReadSingle();
+                    float camTilt = reader.ReadSingle();
 
-                    var state = new TASInputState(move, look, camRot, camPos, jump, interact, pPos, pRot, pVel, pAngVel);
+                    var state = new TASInputState(move, look, camRot, camPos, jump, interact, pPos, pRot, pVel, pAngVel, camPan, camTilt);
                     sys.RecordedInputs[tick] = state;
                 }
 

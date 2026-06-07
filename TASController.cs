@@ -244,6 +244,24 @@ namespace FlippingIsHardTAS
                     if (handler != null)
                     {
                         var rawData = handler.rawData;
+                        
+                        // Read current orbital axes (during normal gameplay, they match camera)
+                        float camPan = 0f, camTilt = 0f;
+                        var movement = playerTransform?.GetComponent<EHS.PlayerMovement>();
+                        if (movement != null && movement.camManager != null)
+                        {
+                            var cinCam = movement.camManager.MainCinemachineCamera;
+                            if (cinCam != null)
+                            {
+                                var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
+                                if (orbital != null)
+                                {
+                                    camPan = orbital.HorizontalAxis.Value;
+                                    camTilt = orbital.VerticalAxis.Value;
+                                }
+                            }
+                        }
+                        
                         var state = new TASInputState(
                             handler.MoveInput,
                             handler.LookInput(),
@@ -254,7 +272,8 @@ namespace FlippingIsHardTAS
                             _cachedRb != null ? _cachedRb.position : playerTransform.position,
                             _cachedRb != null ? _cachedRb.rotation : playerTransform.rotation,
                             _cachedRb != null ? _cachedRb.linearVelocity : Vector3.zero,
-                            _cachedRb != null ? _cachedRb.angularVelocity : Vector3.zero
+                            _cachedRb != null ? _cachedRb.angularVelocity : Vector3.zero,
+                            camPan, camTilt
                         );
                         _macroSystem.RecordTick(_timeController.CurrentTick, state);
                     }
@@ -279,6 +298,9 @@ namespace FlippingIsHardTAS
                             Camera.main.transform.rotation = _macroSystem.GetCurrentCameraRotation();
                             Camera.main.transform.position = _macroSystem.GetCurrentCameraPosition();
                         }
+                        
+                        // Inject orbital axes from macro data so they stay synced with camera
+                        InjectPlaybackAxes();
                     }
                 }
             }
@@ -1047,6 +1069,34 @@ namespace FlippingIsHardTAS
                     }
                 }
                 TASPlugin.Logger.LogInfo($"{tag} camPos={cam?.transform.position} camRot={cam?.transform.rotation.eulerAngles} playerPos={playerPos} pan={pan} tilt={tilt}");
+            }
+            catch { }
+        }
+        
+        /// <summary>
+        /// Injects orbital axes from the current macro playback state into CinemachineOrbitalFollow.
+        /// Keeps axes in perfect sync with Camera.main.transform during playback.
+        /// </summary>
+        private void InjectPlaybackAxes()
+        {
+            try
+            {
+                var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                if (playerTransform == null) return;
+                var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                if (movement == null || movement.camManager == null) return;
+                var cinCam = movement.camManager.MainCinemachineCamera;
+                if (cinCam == null) return;
+                var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
+                if (orbital == null) return;
+                
+                var hAxis = orbital.HorizontalAxis;
+                hAxis.Value = _macroSystem.GetCurrentCameraPan();
+                orbital.HorizontalAxis = hAxis;
+                
+                var vAxis = orbital.VerticalAxis;
+                vAxis.Value = _macroSystem.GetCurrentCameraTilt();
+                orbital.VerticalAxis = vAxis;
             }
             catch { }
         }

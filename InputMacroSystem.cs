@@ -247,6 +247,16 @@ namespace FlippingIsHardTAS
         {
             return _currentPlaybackState.PlayerAngularVelocity;
         }
+        
+        public float GetCurrentCameraPan()
+        {
+            return _currentPlaybackState.CameraPan;
+        }
+        
+        public float GetCurrentCameraTilt()
+        {
+            return _currentPlaybackState.CameraTilt;
+        }
 
         /// <summary>
         /// Returns the exact world-space position recorded for this tick.
