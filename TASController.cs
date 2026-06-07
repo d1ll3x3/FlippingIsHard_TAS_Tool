@@ -149,7 +149,7 @@ namespace FlippingIsHardTAS
                 }
 
                 HandleHotkeys();
-                
+
                 if (_macroSystem != null && _macroSystem.IsPlaying && Camera.main != null)
                 {
                     float t = (Time.time - Time.fixedTime) / Time.fixedDeltaTime;
@@ -168,7 +168,8 @@ namespace FlippingIsHardTAS
                 TASPlugin.Logger.LogError($"Error in TASController.Update: {ex}");
             }
         }
-        
+
+
         public void FixedUpdate()
         {
             try
@@ -235,35 +236,7 @@ namespace FlippingIsHardTAS
         }
 
         // Called by FishNet TimeManager BEFORE PhysX simulates the current tick.
-        // Called by FishNet TimeManager BEFORE PhysX simulates the current tick.
-        // This is the correct place to inject velocity — it overrides the game's
-        // movement before physics resolves, making the simulation deterministic.
         private void OnPrePhysicsSimulation(float delta)
-        {
-            try
-            {
-                if (!enabled || !_isInGame) return;
-                if (_cachedRb == null) return;
-                
-                if (_macroSystem != null && _macroSystem.IsPlaying)
-                {
-                    // Overwrite velocities here so the physics engine sees the correct
-                    // values when it simulates this tick.
-                    _cachedRb.linearVelocity = _macroSystem.GetCurrentPlayerVelocity();
-                    _cachedRb.angularVelocity = _macroSystem.GetCurrentPlayerAngularVelocity();
-                }
-            }
-            catch (Exception ex)
-            {
-                TASPlugin.Logger.LogError($"Error in OnPrePhysicsSimulation: {ex}");
-            }
-        }
-
-        // OnPostTick: runs after physics simulation and FishNet Reconcile.
-        // We compare the physics result with the RECORDED state for the NEXT tick.
-        // If there's a drift (desync), we snap it back. Because we use an epsilon,
-        // we avoid assigning to rb.position when deterministic, keeping RigidbodyInterpolation smooth.
-        private void OnPostTick()
         {
             try
             {
@@ -271,29 +244,22 @@ namespace FlippingIsHardTAS
                 if (_cachedRb == null) return;
                 if (_macroSystem == null || !_macroSystem.IsPlaying) return;
 
-                var nextState = _macroSystem.GetStateAtTick(_timeController.CurrentTick + 1);
-                if (nextState != null)
-                {
-                    var ns = nextState.Value;
-                    // Fallback threshold to correct desyncs ONLY if physics deviated significantly.
-                    // High thresholds (5cm) ensure micro-drifts don't trigger snaps, preserving 100% fluid RigidbodyInterpolation.
-                    if (Vector3.Distance(_cachedRb.position, ns.PlayerPosition) > 0.05f)
-                        _cachedRb.position = ns.PlayerPosition;
-
-                    if (Quaternion.Angle(_cachedRb.rotation, ns.PlayerRotation) > 2.0f)
-                        _cachedRb.rotation = ns.PlayerRotation;
-
-                    if (Vector3.Distance(_cachedRb.linearVelocity, ns.PlayerVelocity) > 0.2f)
-                        _cachedRb.linearVelocity = ns.PlayerVelocity;
-
-                    if (Vector3.Distance(_cachedRb.angularVelocity, ns.PlayerAngularVelocity) > 0.2f)
-                        _cachedRb.angularVelocity = ns.PlayerAngularVelocity;
-                }
+                // Full state injection before physics.
+                // This is the exact method that worked perfectly before the menu bug caused desyncs.
+                _cachedRb.position        = _macroSystem.GetCurrentPlayerPosition();
+                _cachedRb.rotation        = _macroSystem.GetCurrentPlayerRotation();
+                _cachedRb.linearVelocity  = _macroSystem.GetCurrentPlayerVelocity();
+                _cachedRb.angularVelocity = _macroSystem.GetCurrentPlayerAngularVelocity();
             }
             catch (Exception ex)
             {
-                TASPlugin.Logger.LogError($"Error in OnPostTick: {ex}");
+                TASPlugin.Logger.LogError($"Error in OnPrePhysicsSimulation: {ex}");
             }
+        }
+
+        private void OnPostTick()
+        {
+            // Empty
         }
 
         

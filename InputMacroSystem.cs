@@ -138,7 +138,7 @@ namespace FlippingIsHardTAS
         public Quaternion GetInterpolatedCameraRotation(float t)
         {
             if (IsPlaying && HasRecordedData)
-                return Quaternion.Slerp(_previousPlaybackState.CameraRotation, _currentPlaybackState.CameraRotation, t);
+                return Quaternion.SlerpUnclamped(_previousPlaybackState.CameraRotation, _currentPlaybackState.CameraRotation, t);
             
             return GetCurrentCameraRotation();
         }
@@ -157,7 +157,7 @@ namespace FlippingIsHardTAS
         public Vector3 GetInterpolatedCameraPosition(float t)
         {
             if (IsPlaying && HasRecordedData)
-                return Vector3.Lerp(_previousPlaybackState.CameraPosition, _currentPlaybackState.CameraPosition, t);
+                return Vector3.LerpUnclamped(_previousPlaybackState.CameraPosition, _currentPlaybackState.CameraPosition, t);
             
             return GetCurrentCameraPosition();
         }
