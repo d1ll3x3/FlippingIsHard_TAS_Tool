@@ -451,9 +451,13 @@ namespace FlippingIsHardTAS
             {
                 if (_macroSystem.IsPlaying)
                 {
+                    // Auto-pause if not already paused
+                    if (!_timeController.IsPaused)
+                        _timeController.TogglePause();
+                    
                     // ENTER Edit Mode:
                     // 1. Capture camera snapshot BEFORE touching anything
-                    // 2. Manually stop playback BUT keep Brain disabled (avoid the 1-frame glitch)
+                    // 2. Manually stop playback BUT keep Brain disabled (avoid glitch)
                     // 3. Enter edit mode (starts recording)
                     // 4. Restore camera via the standard override → re-enables Brain cleanly
                     SavestateSystem.SaveStateData cameraSnap = CaptureCameraSnapshot();
@@ -788,8 +792,10 @@ namespace FlippingIsHardTAS
                             var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
                             if (orbital != null)
                             {
-                                pan = orbital.HorizontalAxis.Value;
-                                tilt = orbital.VerticalAxis.Value;
+                                // Compute orbital axes FROM the camera transform (not read them,
+                                // because during macro playback Camera.main.transform is written
+                                // directly and the orbital axes may be out of sync).
+                                ComputeOrbitalAxesFromCamera(cinCam, camPos, out pan, out tilt);
                             }
                         }
                     }
@@ -907,6 +913,44 @@ namespace FlippingIsHardTAS
             catch (Exception ex)
             {
                 TASPlugin.Logger.LogError($"Error rewinding tick: {ex}");
+            }
+        }
+        
+        /// <summary>
+        /// Computes HorizontalAxis and VerticalAxis values for CinemachineOrbitalFollow
+        /// from the actual camera world position relative to the Follow target.
+        /// This ensures consistency: the axes we inject will produce the exact
+        /// camera position we want (no 1-frame glitch).
+        /// </summary>
+        private void ComputeOrbitalAxesFromCamera(Unity.Cinemachine.CinemachineCamera cinCam,
+            Vector3 cameraPosition, out float horizontal, out float vertical)
+        {
+            horizontal = 0f;
+            vertical = 0f;
+            
+            try
+            {
+                Transform followTarget = cinCam.Follow;
+                if (followTarget == null)
+                {
+                    var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                    if (playerTransform != null)
+                        followTarget = playerTransform;
+                }
+                if (followTarget == null) return;
+                
+                Vector3 direction = cameraPosition - followTarget.position;
+                
+                // Horizontal = yaw angle around Y axis (degrees)
+                horizontal = Mathf.Atan2(direction.x, direction.z) * Mathf.Rad2Deg;
+                
+                // Vertical = pitch angle from horizontal plane (degrees)
+                float horizontalDist = new Vector3(direction.x, 0, direction.z).magnitude;
+                vertical = -Mathf.Atan2(direction.y, horizontalDist) * Mathf.Rad2Deg;
+            }
+            catch (Exception ex)
+            {
+                TASPlugin.Logger.LogWarning($"[CamRestore] Could not compute orbital axes: {ex.Message}");
             }
         }
         
