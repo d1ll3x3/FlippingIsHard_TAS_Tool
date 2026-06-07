@@ -1,7 +1,7 @@
 # Setup script to find and copy BepInEx and Unity DLLs
 # Works across different Steam library locations
 
-Write-Host "Setting up BepInEx Trainer build environment..." -ForegroundColor Cyan
+Write-Host "Setting up BepInEx TAS Tool build environment..." -ForegroundColor Cyan
 Write-Host ""
 
 # Create lib folder
@@ -30,85 +30,59 @@ foreach ($path in $searchPaths) {
 }
 
 if (-not $gamePath) {
-    Write-Host "ERROR: Could not find game installation" -ForegroundColor Red
+    Write-Host "ERROR: Could not find game installation automatically." -ForegroundColor Red
     Write-Host ""
     Write-Host "Please make sure:" -ForegroundColor Yellow
-    Write-Host "  1. BepInEx is installed in your game folder"
+    Write-Host "  1. BepInEx IL2CPP is installed in your game folder"
     Write-Host "  2. The game is in a standard Steam library location"
+    Write-Host "  3. You have run the game at least once so BepInEx generates the interop DLLs"
     Write-Host ""
+    Write-Host "If your game is elsewhere, edit this script to add your path."
     exit 1
 }
 
 Write-Host "Found game at: $gamePath" -ForegroundColor Green
 Write-Host ""
 
-# Copy BepInEx DLL
-Write-Host "Copying BepInEx DLLs..." -ForegroundColor Cyan
-$bepinexDll = "$gamePath\BepInEx\core\BepInEx.dll"
-if (Test-Path $bepinexDll) {
-    Copy-Item $bepinexDll "lib\" -Force
-    Write-Host "  OK: BepInEx.dll copied" -ForegroundColor Green
-} else {
-    Write-Host "  ERROR: BepInEx.dll not found at $bepinexDll" -ForegroundColor Red
+Write-Host "Copying Game and Unity Interop DLLs..." -ForegroundColor Cyan
+
+$dllsToCopy = @(
+    "Assembly-CSharp.dll",
+    "EHS.Core.Components.dll",
+    "FishNet.Runtime.dll",
+    "Il2Cppmscorlib.dll",
+    "Il2CppSystem.dll",
+    "Unity.Cinemachine.dll",
+    "Unity.InputSystem.dll",
+    "UnityEngine.CoreModule.dll",
+    "UnityEngine.IMGUIModule.dll",
+    "UnityEngine.InputLegacyModule.dll",
+    "UnityEngine.PhysicsModule.dll",
+    "UnityEngine.TextRenderingModule.dll"
+)
+
+$interopPath = "$gamePath\BepInEx\interop"
+if (-not (Test-Path $interopPath)) {
+    Write-Host "ERROR: BepInEx\interop folder not found." -ForegroundColor Red
+    Write-Host "You must launch the game at least once after installing BepInEx so it can generate the interop assemblies."
+    exit 1
 }
 
-# Copy Unity DLLs
-Write-Host "Copying Unity DLLs..." -ForegroundColor Cyan
-
-# Try BepInEx unity-libs folder first (IL2CPP)
-$unityDll = "$gamePath\BepInEx\unity-libs\UnityEngine.dll"
-if (Test-Path $unityDll) {
-    Copy-Item $unityDll "lib\" -Force
-    Write-Host "  OK: UnityEngine.dll copied" -ForegroundColor Green
-} else {
-    # Fallback to Managed folder (Mono)
-    $unityDll = "$gamePath\Flipping is Hard Demo_Data\Managed\UnityEngine.dll"
-    if (Test-Path $unityDll) {
-        Copy-Item $unityDll "lib\" -Force
-        Write-Host "  OK: UnityEngine.dll copied" -ForegroundColor Green
+$success = $true
+foreach ($dll in $dllsToCopy) {
+    $sourcePath = "$interopPath\$dll"
+    if (Test-Path $sourcePath) {
+        Copy-Item $sourcePath "lib\" -Force
+        Write-Host "  OK: $dll copied" -ForegroundColor Green
     } else {
-        Write-Host "  ERROR: UnityEngine.dll not found" -ForegroundColor Red
-    }
-}
-
-# Try BepInEx unity-libs folder first (IL2CPP)
-$coreModuleDll = "$gamePath\BepInEx\unity-libs\UnityEngine.CoreModule.dll"
-if (Test-Path $coreModuleDll) {
-    Copy-Item $coreModuleDll "lib\" -Force
-    Write-Host "  OK: UnityEngine.CoreModule.dll copied" -ForegroundColor Green
-} else {
-    # Fallback to Managed folder (Mono)
-    $coreModuleDll = "$gamePath\Flipping is Hard Demo_Data\Managed\UnityEngine.CoreModule.dll"
-    if (Test-Path $coreModuleDll) {
-        Copy-Item $coreModuleDll "lib\" -Force
-        Write-Host "  OK: UnityEngine.CoreModule.dll copied" -ForegroundColor Green
-    } else {
-        Write-Host "  ERROR: UnityEngine.CoreModule.dll not found" -ForegroundColor Red
+        Write-Host "  ERROR: $dll not found in interop folder" -ForegroundColor Red
+        $success = $false
     }
 }
 
 Write-Host ""
-if ((Test-Path "lib\BepInEx.dll") -and (Test-Path "lib\UnityEngine.dll")) {
-    Write-Host "Copying additional Unity modules..." -ForegroundColor Cyan
-    
-    $modules = @(
-        "UnityEngine.InputModule.dll",
-        "UnityEngine.InputLegacyModule.dll",
-        "UnityEngine.TextRenderingModule.dll",
-        "UnityEngine.IMGUIModule.dll",
-        "UnityEngine.PhysicsModule.dll"
-    )
-    
-    foreach ($module in $modules) {
-        $modulePath = "$gamePath\BepInEx\unity-libs\$module"
-        if (Test-Path $modulePath) {
-            Copy-Item $modulePath "lib\" -Force
-            Write-Host "  OK: $module copied" -ForegroundColor Green
-        }
-    }
-    
-    Write-Host ""
+if ($success) {
     Write-Host "Setup complete! You can now build the project." -ForegroundColor Green
 } else {
-    Write-Host "Setup incomplete. Check the errors above." -ForegroundColor Red
+    Write-Host "Setup finished with errors. Some DLLs are missing." -ForegroundColor Yellow
 }

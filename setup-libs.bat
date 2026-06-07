@@ -2,7 +2,7 @@
 REM Setup script to copy BepInEx and Unity DLLs to lib folder
 REM Automatically searches for the game in common Steam library locations
 
-echo Setting up BepInEx Trainer build environment...
+echo Setting up BepInEx TAS Tool build environment...
 echo.
 
 REM Create lib folder
@@ -32,10 +32,11 @@ if not exist "%GAME_PATH%" (
     echo ERROR: Could not find game installation automatically.
     echo.
     echo Please make sure:
-    echo   1. BepInEx is installed in your game folder
+    echo   1. BepInEx IL2CPP is installed in your game folder
     echo   2. The game is in a standard Steam library location
+    echo   3. You have run the game at least once to generate interop DLLs
     echo.
-    echo If you have a custom Steam library path, edit this file and set GAME_PATH manually.
+    echo If you have a custom Steam library path, edit setup-libs.ps1 and run that instead.
     echo.
     pause
     exit /b 1
@@ -44,38 +45,28 @@ if not exist "%GAME_PATH%" (
 echo Found game at: "%GAME_PATH%"
 echo.
 
-REM Copy BepInEx DLLs
-echo Copying BepInEx DLLs...
-if exist "%GAME_PATH%\BepInEx\core\BepInEx.dll" (
-    copy "%GAME_PATH%\BepInEx\core\BepInEx.dll" "lib\"
-    echo   - BepInEx.dll copied
-) else (
-    echo   - ERROR: BepInEx.dll not found
-    echo   - Make sure BepInEx is installed in your game folder
+set INTEROP_PATH=%GAME_PATH%\BepInEx\interop
+if not exist "%INTEROP_PATH%" (
+    echo ERROR: BepInEx\interop folder not found.
+    echo You must launch the game at least once after installing BepInEx so it generates interop assemblies.
+    pause
+    exit /b 1
 )
 
-REM Copy Unity DLLs
-echo Copying Unity DLLs...
-if exist "%GAME_PATH%\Flipping is Hard Demo_Data\Managed\UnityEngine.dll" (
-    copy "%GAME_PATH%\Flipping is Hard Demo_Data\Managed\UnityEngine.dll" "lib\"
-    echo   - UnityEngine.dll copied
-) else (
-    echo   - ERROR: UnityEngine.dll not found
-)
+echo Copying DLLs...
 
-if exist "%GAME_PATH%\Flipping is Hard Demo_Data\Managed\UnityEngine.CoreModule.dll" (
-    copy "%GAME_PATH%\Flipping is Hard Demo_Data\Managed\UnityEngine.CoreModule.dll" "lib\"
-    echo   - UnityEngine.CoreModule.dll copied
-) else (
-    echo   - ERROR: UnityEngine.CoreModule.dll not found
+set DLLS=Assembly-CSharp.dll EHS.Core.Components.dll FishNet.Runtime.dll Il2Cppmscorlib.dll Il2CppSystem.dll Unity.Cinemachine.dll Unity.InputSystem.dll UnityEngine.CoreModule.dll UnityEngine.IMGUIModule.dll UnityEngine.InputLegacyModule.dll UnityEngine.PhysicsModule.dll UnityEngine.TextRenderingModule.dll
+
+for %%f in (%DLLS%) do (
+    if exist "%INTEROP_PATH%\%%f" (
+        copy "%INTEROP_PATH%\%%f" "lib\" >nul
+        echo   - %%f copied
+    ) else (
+        echo   - ERROR: %%f not found
+    )
 )
 
 echo.
-if exist "lib\BepInEx.dll" (
-    echo Setup complete! You can now build the project.
-    echo.
-) else (
-    echo ERROR: Setup failed. Check the errors above.
-    echo.
-    pause
-)
+echo Setup complete! You can now run "dotnet build" or use build.bat.
+echo.
+pause
