@@ -80,6 +80,8 @@ namespace FlippingIsHardTAS
             }
         }
         
+        private bool _isInGame = false;
+
         public void Update()
         {
             try
@@ -90,15 +92,60 @@ namespace FlippingIsHardTAS
                 if (currentScene != _lastScene)
                 {
                     _lastScene = currentScene;
-                    if (currentScene == "Scene_MainMenu" || currentScene == "Scene_Bootstrapper")
+                    bool wasInGame = _isInGame;
+                    _isInGame = !(currentScene == "Scene_MainMenu" || currentScene == "Scene_Bootstrapper" || currentScene == "Scene_Cinematic_Intro");
+                    
+                    if (!_isInGame && wasInGame)
                     {
-                        TASPlugin.Logger.LogInfo("TAS: Menu loaded, resetting state.");
+                        // Player exited to menu
+                        TASPlugin.Logger.LogInfo("TAS: Exited to menu, making mod dormant.");
                         _timeController?.ResetTick();
                         _macroSystem?.Clear();
                         _savestateSystem?.Clear();
                         _gameObjectFinder?.ClearCache();
-                        _cachedRb = null; // force re-lookup on next scene
+                        _cachedRb = null;
+                        
+                        // Disable slowmo/pause if they were active
+                        if (_timeController != null)
+                        {
+                            if (_timeController.IsPaused) _timeController.TogglePause();
+                            if (_timeController.IsSlowMo) _timeController.ToggleSlowMo();
+                        }
+                        
+                        // Clean up hooks because the network session is ending
+                        UnsubscribeFromFishNet();
                     }
+                    else if (_isInGame && !wasInGame)
+                    {
+                        // Player entered game
+                        TASPlugin.Logger.LogInfo("TAS: Entered game, waking up mod.");
+                        _timeController?.ResetTick();
+                        _macroSystem?.Clear();
+                        _savestateSystem?.Clear();
+                        _gameObjectFinder?.ClearCache();
+                        _cachedRb = null;
+                        
+                        // Re-apply deterministic settings because Unity/Game might have reset them on scene load!
+                        // This prevents lag spikes (like starting OBS) from causing physics catch-up desyncs.
+                        ApplyDeterministicSettings();
+                    }
+                }
+
+                // If not in an active game session, do nothing else
+                if (!_isInGame) return;
+
+                // FishNet TimeManager takes a few frames to initialize after entering a match.
+                // We poll every frame until it exists and we successfully subscribe.
+                if (_fishNetTimeManager == null)
+                {
+                    try
+                    {
+                        if (FishNet.InstanceFinder.TimeManager != null)
+                        {
+                            SubscribeToFishNet();
+                        }
+                    }
+                    catch { } // Suppress errors if InstanceFinder is not ready
                 }
 
                 HandleHotkeys();
@@ -126,7 +173,7 @@ namespace FlippingIsHardTAS
         {
             try
             {
-                if (!enabled) return;
+                if (!enabled || !_isInGame) return;
 
                 _timeController?.FixedUpdate();
 
@@ -188,10 +235,28 @@ namespace FlippingIsHardTAS
         }
 
         // Called by FishNet TimeManager BEFORE PhysX simulates the current tick.
+        // Called by FishNet TimeManager BEFORE PhysX simulates the current tick.
+        // This is the correct place to inject velocity — it overrides the game's
+        // movement before physics resolves, making the simulation deterministic.
         private void OnPrePhysicsSimulation(float delta)
         {
-            // Empty. We no longer inject state here because it overwrites forces applied 
-            // by the character controller in FixedUpdate, which causes massive desyncs.
+            try
+            {
+                if (!enabled || !_isInGame) return;
+                if (_cachedRb == null) return;
+                
+                if (_macroSystem != null && _macroSystem.IsPlaying)
+                {
+                    // Overwrite velocities here so the physics engine sees the correct
+                    // values when it simulates this tick.
+                    _cachedRb.linearVelocity = _macroSystem.GetCurrentPlayerVelocity();
+                    _cachedRb.angularVelocity = _macroSystem.GetCurrentPlayerAngularVelocity();
+                }
+            }
+            catch (Exception ex)
+            {
+                TASPlugin.Logger.LogError($"Error in OnPrePhysicsSimulation: {ex}");
+            }
         }
 
         // OnPostTick: runs after physics simulation and FishNet Reconcile.
@@ -202,7 +267,7 @@ namespace FlippingIsHardTAS
         {
             try
             {
-                if (!enabled) return;
+                if (!enabled || !_isInGame) return;
                 if (_cachedRb == null) return;
                 if (_macroSystem == null || !_macroSystem.IsPlaying) return;
 
@@ -210,18 +275,18 @@ namespace FlippingIsHardTAS
                 if (nextState != null)
                 {
                     var ns = nextState.Value;
-                    
-                    // Fallback threshold to correct desyncs ONLY if physics deviated from the recording.
-                    if (Vector3.Distance(_cachedRb.position, ns.PlayerPosition) > 0.001f)
+                    // Fallback threshold to correct desyncs ONLY if physics deviated significantly.
+                    // High thresholds (5cm) ensure micro-drifts don't trigger snaps, preserving 100% fluid RigidbodyInterpolation.
+                    if (Vector3.Distance(_cachedRb.position, ns.PlayerPosition) > 0.05f)
                         _cachedRb.position = ns.PlayerPosition;
 
-                    if (Quaternion.Angle(_cachedRb.rotation, ns.PlayerRotation) > 0.1f)
+                    if (Quaternion.Angle(_cachedRb.rotation, ns.PlayerRotation) > 2.0f)
                         _cachedRb.rotation = ns.PlayerRotation;
 
-                    if (Vector3.Distance(_cachedRb.linearVelocity, ns.PlayerVelocity) > 0.01f)
+                    if (Vector3.Distance(_cachedRb.linearVelocity, ns.PlayerVelocity) > 0.2f)
                         _cachedRb.linearVelocity = ns.PlayerVelocity;
 
-                    if (Vector3.Distance(_cachedRb.angularVelocity, ns.PlayerAngularVelocity) > 0.01f)
+                    if (Vector3.Distance(_cachedRb.angularVelocity, ns.PlayerAngularVelocity) > 0.2f)
                         _cachedRb.angularVelocity = ns.PlayerAngularVelocity;
                 }
             }
@@ -236,7 +301,7 @@ namespace FlippingIsHardTAS
         {
             try
             {
-                if (!enabled) return;
+                if (!enabled || !_isInGame) return;
                 _overlayRenderer.OnGUI();
             }
             catch (Exception ex)
@@ -446,15 +511,20 @@ namespace FlippingIsHardTAS
                 var timeManager = FishNet.InstanceFinder.TimeManager;
                 if (timeManager != null)
                 {
+                    // Unsubscribe from old one if it still exists
+                    if (_fishNetTimeManager != null && _prePhysicsDelegate != null)
+                    {
+                        try { _fishNetTimeManager.OnPrePhysicsSimulation -= _prePhysicsDelegate; } catch { }
+                        try { _fishNetTimeManager.OnPostTick -= _postTickDelegate; } catch { }
+                    }
+
                     _fishNetTimeManager = timeManager;
 
                     // Hook BEFORE physics: inject velocity so PhysX simulates with correct momentum
                     _prePhysicsDelegate = (Il2CppSystem.Action<float>)((float delta) => OnPrePhysicsSimulation(delta));
                     timeManager.OnPrePhysicsSimulation += _prePhysicsDelegate;
 
-                    // Hook AFTER full tick (after Reconcile): force position+rotation to recorded values.
-                    // Reconcile runs between OnPostPhysicsSimulation and OnPostTick, so this is the
-                    // last possible moment to correct what Reconcile may have snapped.
+                    // Hook AFTER full tick (after Reconcile): fallback to correct position if it drifted
                     _postTickDelegate = (Il2CppSystem.Action)(() => OnPostTick());
                     timeManager.OnPostTick += _postTickDelegate;
 
@@ -471,29 +541,40 @@ namespace FlippingIsHardTAS
             }
         }
         
-        public void Destroy()
+        private void UnsubscribeFromFishNet()
         {
             try
             {
                 if (_fishNetTimeManager != null)
                 {
                     if (_prePhysicsDelegate != null)
-                    {
-                        _fishNetTimeManager.OnPrePhysicsSimulation -= _prePhysicsDelegate;
-                        _prePhysicsDelegate = null;
-                    }
+                        try { _fishNetTimeManager.OnPrePhysicsSimulation -= _prePhysicsDelegate; } catch { }
+                    
                     if (_postTickDelegate != null)
-                    {
-                        _fishNetTimeManager.OnPostTick -= _postTickDelegate;
-                        _postTickDelegate = null;
-                    }
-                    _fishNetTimeManager = null;
-                    TASPlugin.Logger.LogInfo("Unsubscribed from FishNet TimeManager hooks");
+                        try { _fishNetTimeManager.OnPostTick -= _postTickDelegate; } catch { }
+                        
+                    TASPlugin.Logger.LogInfo("Unsubscribed from FishNet TimeManager");
                 }
+            }
+            catch { }
+            finally
+            {
+                _fishNetTimeManager = null;
+                _prePhysicsDelegate = null;
+                _postTickDelegate = null;
+            }
+        }
+
+        public void Destroy()
+        {
+            try
+            {
+                UnsubscribeFromFishNet();
+                ToggleCinemachine(true);
             }
             catch (Exception ex)
             {
-                TASPlugin.Logger.LogError($"Error unsubscribing from FishNet: {ex}");
+                TASPlugin.Logger.LogError($"Error in TASController.Destroy: {ex}");
             }
         }
     }
