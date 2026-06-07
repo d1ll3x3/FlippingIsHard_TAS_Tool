@@ -574,6 +574,8 @@ namespace FlippingIsHardTAS
             {
                 _cachedRb.interpolation = _originalInterpolation;
             }
+            // Sync orbital axes from last macro tick before re-enabling Brain
+            InjectPlaybackAxes();
             ToggleCinemachine(true);
             TASPlugin.Logger.LogInfo("TAS: Playback stopped");
         }
