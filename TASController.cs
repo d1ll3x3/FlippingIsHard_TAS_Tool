@@ -477,13 +477,9 @@ namespace FlippingIsHardTAS
                     if (!_timeController.IsPaused)
                         _timeController.TogglePause();
                     
-                    // EXACT SAME FLOW as savestate load (R key):
-                    // Save → StopPlayback → Load → SyncTransforms → StartCameraRestore → EnterEditMode
-                    _savestateSystem.SaveState(_gameObjectFinder, _timeController.CurrentTick, false);
+                    // Simplest possible: just stop playback and start recording.
+                    // InjectPlaybackAxes keeps orbital axes synced during playback.
                     StopPlayback();
-                    _savestateSystem.LoadState(_gameObjectFinder, _timeController, false);
-                    Physics.SyncTransforms();
-                    StartCameraRestore(_gameObjectFinder);
                     _macroSystem.EnterEditMode(_timeController.CurrentTick);
                     
                     TASPlugin.Logger.LogInfo($"TAS: Edit Mode ON at tick {_timeController.CurrentTick}");
@@ -1090,8 +1086,10 @@ namespace FlippingIsHardTAS
                 var vAxis = orbital.VerticalAxis;
                 vAxis.Value = _macroSystem.GetCurrentCameraTilt();
                 orbital.VerticalAxis = vAxis;
+                
+                TASPlugin.Logger.LogInfo($"[InjectAxes] tick={_timeController.CurrentTick} pan={_macroSystem.GetCurrentCameraPan():F1} tilt={_macroSystem.GetCurrentCameraTilt():F1}");
             }
-            catch { }
+            catch (Exception ex) { TASPlugin.Logger.LogWarning($"[InjectAxes] ERROR: {ex.Message}"); }
         }
         
         private void UpdateCurrentPosition()
