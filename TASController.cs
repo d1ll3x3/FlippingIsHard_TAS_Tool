@@ -996,7 +996,15 @@ namespace FlippingIsHardTAS
                 Vector3 orbitCenter = followTarget.position + targetOffset;
                 Vector3 direction = Camera.main.transform.position - orbitCenter;
                 
-                float horizontal = Mathf.Atan2(direction.x, direction.z) * Mathf.Rad2Deg;
+                // World-space horizontal angle from orbit center to camera
+                float worldHorizontal = Mathf.Atan2(direction.x, direction.z) * Mathf.Rad2Deg;
+                // CinemachineOrbitalFollow's HorizontalAxis is relative to Follow target's Y rotation
+                float followYaw = followTarget.eulerAngles.y;
+                float horizontal = worldHorizontal - followYaw;
+                // Normalize to [-180, 180]
+                while (horizontal > 180f) horizontal -= 360f;
+                while (horizontal < -180f) horizontal += 360f;
+                
                 float horizontalDist = new Vector3(direction.x, 0, direction.z).magnitude;
                 float vertical = -Mathf.Atan2(direction.y, horizontalDist) * Mathf.Rad2Deg;
                 
