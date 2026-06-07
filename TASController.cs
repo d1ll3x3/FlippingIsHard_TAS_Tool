@@ -676,11 +676,12 @@ namespace FlippingIsHardTAS
                 {
                     _overrideCinCam.PreviousStateIsValid = false;
                     
-                    // Try ForceCameraPosition (Cinemachine 3.x) via reflection
+                    // Try ForceCameraPosition (Cinemachine 3.x) with explicit parameter types
                     try
                     {
                         var method = _overrideCinCam.GetType().GetMethod("ForceCameraPosition",
-                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
+                            null, new Type[] { typeof(Vector3), typeof(Quaternion) }, null);
                         if (method != null && Camera.main != null)
                         {
                             method.Invoke(_overrideCinCam, new object[] { Camera.main.transform.position, Camera.main.transform.rotation });
@@ -919,8 +920,8 @@ namespace FlippingIsHardTAS
         /// <summary>
         /// Computes HorizontalAxis and VerticalAxis values for CinemachineOrbitalFollow
         /// from the actual camera world position relative to the Follow target.
-        /// This ensures consistency: the axes we inject will produce the exact
-        /// camera position we want (no 1-frame glitch).
+        /// Accounts for TargetOffset and ShoulderOffset to ensure the computed axes
+        /// reproduce the exact camera position.
         /// </summary>
         private void ComputeOrbitalAxesFromCamera(Unity.Cinemachine.CinemachineCamera cinCam,
             Vector3 cameraPosition, out float horizontal, out float vertical)
@@ -939,7 +940,18 @@ namespace FlippingIsHardTAS
                 }
                 if (followTarget == null) return;
                 
-                Vector3 direction = cameraPosition - followTarget.position;
+                var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
+                
+                // Get TargetOffset (applied to follow target position)
+                Vector3 targetOffset = Vector3.zero;
+                if (orbital != null)
+                {
+                    try { targetOffset = orbital.TargetOffset; } catch { }
+                }
+                
+                // Compute orbit center = followTarget.position + TargetOffset
+                Vector3 orbitCenter = followTarget.position + targetOffset;
+                Vector3 direction = cameraPosition - orbitCenter;
                 
                 // Horizontal = yaw angle around Y axis (degrees)
                 horizontal = Mathf.Atan2(direction.x, direction.z) * Mathf.Rad2Deg;
