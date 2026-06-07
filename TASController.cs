@@ -505,9 +505,9 @@ namespace FlippingIsHardTAS
             if (isFrameAdvancePressed)
                 _timeController.TickFrameAdvance(justPressed: !_wasFrameAdvancePressed);
 
-            // ── Rewind: go back 1 tick (press) or 10/sec (hold) during paused replay ──
+            // ── Rewind: go back 1 tick (press) or 10/sec (hold) during paused replay ONLY ──
             bool isRewindPressed = TASConfig.Settings.RewindTick.IsPressed();
-            if (isRewindPressed && _timeController.IsPaused && _macroSystem.HasRecordedData && _timeController.CurrentTick > 0)
+            if (isRewindPressed && _timeController.IsPaused && _macroSystem.IsPlaying && !_macroSystem.IsEditMode && _timeController.CurrentTick > 0)
             {
                 // Only rewind on press, not hold — or do 10/sec like frame advance
                 bool shouldRewind = !_wasRewindPressed; // first press
