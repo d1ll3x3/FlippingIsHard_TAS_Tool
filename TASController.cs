@@ -459,24 +459,14 @@ namespace FlippingIsHardTAS
                     if (!_timeController.IsPaused)
                         _timeController.TogglePause();
                     
-                    // ENTER Edit Mode:
-                    // 1. Capture camera snapshot BEFORE touching anything
-                    // 2. Manually stop playback BUT keep Brain disabled (avoid glitch)
-                    // 3. Enter edit mode (starts recording)
-                    // 4. Restore camera via the standard override → re-enables Brain cleanly
-                    SavestateSystem.SaveStateData cameraSnap = CaptureCameraSnapshot();
-                    
-                    // Stop playback manually WITHOUT re-enabling CinemachineBrain
-                    _macroSystem.StopPlaying();
-                    if (_cachedRb != null)
-                        _cachedRb.interpolation = _originalInterpolation;
-                    // NOTE: NOT calling ToggleCinemachine(true) — Brain stays disabled
-                    
+                    // ENTER Edit Mode: stop playback, capture camera, start recording,
+                    // then do the proven camera restore (same as savestate R key).
+                    // Don't use the savestate system directly to avoid overwriting user data.
+                    SavestateSystem.SaveStateData snap = CaptureCameraSnapshot();
+                    StopPlayback();
                     _macroSystem.EnterEditMode(_timeController.CurrentTick);
-                    
-                    // Restore camera to avoid the jump when Brain re-enables
-                    if (cameraSnap != null)
-                        StartCameraRestoreFromState(cameraSnap);
+                    if (snap != null)
+                        StartCameraRestoreFromState(snap);
                     
                     TASPlugin.Logger.LogInfo($"TAS: Edit Mode ON at tick {_timeController.CurrentTick}");
                 }
@@ -832,18 +822,15 @@ namespace FlippingIsHardTAS
                 // Disable CinemachineBrain (same as macros)
                 ToggleCinemachine(false);
                 
-                // Inject orbital axes
-                InjectOrbitalAxes(state, _gameObjectFinder);
-                
-                // Write camera transform directly
+                // Write camera transform directly (SyncOrbitalAxesToCamera in Update loop
+                // will keep axes consistent during the override)
                 if (Camera.main != null)
                 {
                     Camera.main.transform.position = state.CameraPosition;
                     Camera.main.transform.rotation = state.CameraRotation;
                 }
                 
-                // Find CinemachineCamera, call ForceCameraPosition to sync internals,
-                // and disable InputAxisController during override
+                // Disable InputAxisController during override
                 var playerTransform = _gameObjectFinder.FindPlayerTransform();
                 if (playerTransform != null)
                 {
@@ -854,25 +841,6 @@ namespace FlippingIsHardTAS
                         if (cinCam != null)
                         {
                             _overrideCinCam = cinCam;
-                            
-                            // ForceCameraPosition syncs ALL internal state (orbital axes, damping, etc.)
-                            // to the camera transform we just wrote — critical for zero-glitch transition.
-                            cinCam.PreviousStateIsValid = false;
-                            try
-                            {
-                                var method = cinCam.GetType().GetMethod("ForceCameraPosition",
-                                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
-                                    null, new Type[] { typeof(Vector3), typeof(Quaternion) }, null);
-                                if (method != null && Camera.main != null)
-                                {
-                                    Quaternion rot = Camera.main.transform.rotation;
-                                    rot.Normalize();
-                                    method.Invoke(cinCam, new object[] { 
-                                        Camera.main.transform.position, rot });
-                                }
-                            }
-                            catch { }
-                            
                             var axisCtrl = cinCam.GetComponent<Unity.Cinemachine.CinemachineInputAxisController>();
                             if (axisCtrl == null && movement.camManager.axisSettingsSync != null)
                                 axisCtrl = movement.camManager.axisSettingsSync.axisController;
@@ -889,7 +857,7 @@ namespace FlippingIsHardTAS
                 _cameraOverrideActive = true;
                 _overrideCameraState = state;
                 
-                TASPlugin.Logger.LogInfo($"[EditMode] Camera snapshot restored, ForceCameraPosition called, overriding for {CAMERA_OVERRIDE_FRAMES} frames.");
+                TASPlugin.Logger.LogInfo($"[EditMode] Camera override started, overriding for {CAMERA_OVERRIDE_FRAMES} frames.");
             }
             catch (Exception ex)
             {
