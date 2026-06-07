@@ -1,15 +1,18 @@
 using UnityEngine;
 
-namespace FlippingIsHardTrainer
+namespace FlippingIsHardTAS
 {
     public class OverlayRenderer
     {
         // Overlay data
         private Vector3 _currentPosition = Vector3.zero;
         private bool _hasSavedPosition = false;
-        private bool _flyModeActive = false;
-        private bool _keepVelocityActive = false;
-        private bool _keepAngleActive = false;
+        private bool _isRecording = false;
+        private bool _isPlaying = false;
+        private bool _isPaused = false;
+        private bool _isSlowMo = false;
+        private bool _isSlowMoBoost = false;
+        private ulong _currentTick = 0;
         private bool _showOverlay = true;
 
         // Coordinate caching
@@ -19,41 +22,34 @@ namespace FlippingIsHardTrainer
         private float _lastSpeed = -1f;
         private string _cachedSpeedStr = "SPEED: 0.0 M/S";
 
-        // Keybind caching (to avoid GC allocations in OnGUI)
-        private string _strSave;
-        private string _strTelSave;
-        private string _strTelReady;
-        private string _strFly;
-        private string _strVelOn;
-        private string _strVelOff;
-        private string _strAngOn;
-        private string _strAngOff;
-        private string _strMenu;
-
         // Layout constants
-        private const int CTRL_W = 390;
-        private const int CTRL_H = 236;
-        private const int CTRL_H_FLY = 284;
+        private const int CTRL_W = 420;
         private const int COORD_W = 240;
         private const int COORD_H = 92;
         private const int PAD = 20;
 
         // Colors
-        private readonly Color _bgColor    = new Color(0.08f, 0.08f, 0.08f, 0.85f);
-        private readonly Color _borderColor = new Color(0.4f,  0.6f,  1.0f,  1.0f);
-        private readonly Color _headerColor = new Color(0.0f,  0.8f,  1.0f,  1.0f);
+        private readonly Color _bgColor    = new Color(0.06f, 0.06f, 0.06f, 0.88f);
+        private readonly Color _borderColor = new Color(0.35f, 0.6f,  1.0f,  1.0f);
+        private readonly Color _headerColor = new Color(0.0f,  0.85f, 1.0f,  1.0f);
         private readonly Color _savedColor  = new Color(0.2f,  1.0f,  0.4f,  1.0f);
-        private readonly Color _flyColor    = new Color(0.0f,  1.0f,  1.0f,  1.0f);
-        private readonly Color _dimColor    = new Color(0.7f,  0.7f,  0.7f,  1.0f);
-        private readonly Color _ctrlColor   = new Color(1.0f,  0.7f,  0.4f,  1.0f);
-        private readonly Color _dangerColor = new Color(0.8f,  0.3f,  0.3f,  1.0f);
+        private readonly Color _recColor    = new Color(1.0f,  0.25f, 0.25f, 1.0f);
+        private readonly Color _playColor   = new Color(0.0f,  1.0f,  1.0f,  1.0f);
+        private readonly Color _pauseColor  = new Color(1.0f,  0.75f, 0.2f,  1.0f);
+        private readonly Color _dimColor    = new Color(0.65f, 0.65f, 0.65f, 1.0f);
+        private readonly Color _keyColor    = new Color(1.0f,  0.85f, 0.4f,  1.0f);
+        private readonly Color _sectionColor= new Color(0.5f,  0.75f, 1.0f,  1.0f);
 
-        // Styles — created lazily inside OnGUI
+        // Styles
         private GUIStyle _styleHeader;
         private GUIStyle _styleText;
+        private GUIStyle _styleKey;
+        private GUIStyle _styleSection;
         private bool _stylesReady = false;
 
-        public void UpdateData(Vector3 pos, float speed, bool hasSaved, bool flyActive, bool keepVelocity, bool keepAngle)
+        public void UpdateData(Vector3 pos, float speed, bool hasSaved, bool isRecording,
+                               bool isPlaying, bool isPaused, ulong currentTick,
+                               bool isSlowMo = false, bool isSlowMoBoost = false)
         {
             if (_cachedCoords == null || Vector3.Distance(_currentPosition, pos) > 0.05f)
             {
@@ -70,127 +66,194 @@ namespace FlippingIsHardTrainer
             }
 
             _hasSavedPosition = hasSaved;
-            _flyModeActive = flyActive;
-            _keepVelocityActive = keepVelocity;
-            _keepAngleActive = keepAngle;
-            _showOverlay = Application.isFocused;
+            _isRecording      = isRecording;
+            _isPlaying        = isPlaying;
+            _isPaused         = isPaused;
+            _isSlowMo         = isSlowMo;
+            _isSlowMoBoost    = isSlowMoBoost;
+            _currentTick      = currentTick;
+            _showOverlay      = Application.isFocused;
         }
 
-        public void SetPositionSaved(bool saved) => _hasSavedPosition = saved;
-        public void SetFlyModeActive(bool active) => _flyModeActive = active;
-
-        public void RefreshKeybinds()
-        {
-            string saveStr = TrainerConfig.Settings.SavePosition.ToString().PadRight(10);
-            string telStr = TrainerConfig.Settings.Teleport.ToString().PadRight(10);
-            string flyStr = TrainerConfig.Settings.ToggleFlyMode.ToString().PadRight(10);
-            string velStr = TrainerConfig.Settings.ToggleKeepVelocity.ToString().PadRight(10);
-            string angStr = TrainerConfig.Settings.ToggleKeepAngle.ToString().PadRight(10);
-            string menuStr = TrainerConfig.Settings.OpenBindMenu.ToString().PadRight(10);
-
-            _strSave = $"  {saveStr}:  Save position";
-            _strTelSave = $"  {telStr}:  Teleport (Save first)";
-            _strTelReady = $"  {telStr}:  Teleport (Ready)";
-            _strFly = $"  {flyStr}:  Toggle Fly Mode";
-            _strVelOn = $"  {velStr}:  Keep Velocity [ON]";
-            _strVelOff = $"  {velStr}:  Keep Velocity [OFF]";
-            _strAngOn = $"  {angStr}:  Keep Angle [ON]";
-            _strAngOff = $"  {angStr}:  Keep Angle [OFF]";
-            _strMenu = $"  {menuStr}:  Open Bind Menu";
-        }
+        public void RefreshKeybinds() { }
 
         public void OnGUI()
         {
             if (!_showOverlay) return;
-
             EnsureStyles();
             DrawControls();
             DrawCoords();
         }
 
-        // ── Styles ──────────────────────────────────────────────────────────
-
         private void EnsureStyles()
         {
             if (_stylesReady) return;
 
-            // In IL2CPP interop, GUIStyle() default constructor works fine.
-            // We copy from GUI.skin.label using the Pointer property.
-            _styleHeader = new GUIStyle();
-            _styleHeader.fontSize = 22;
-            _styleHeader.fontStyle = FontStyle.Bold;
+            _styleHeader = new GUIStyle
+            {
+                fontSize = 22,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.UpperLeft
+            };
             _styleHeader.normal.textColor = _headerColor;
-            _styleHeader.alignment = TextAnchor.UpperLeft;
 
-            _styleText = new GUIStyle();
-            _styleText.fontSize = 18;
-            _styleText.fontStyle = FontStyle.Bold;
+            _styleText = new GUIStyle
+            {
+                fontSize = 18,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.UpperLeft
+            };
             _styleText.normal.textColor = Color.white;
-            _styleText.alignment = TextAnchor.UpperLeft;
+
+            _styleKey = new GUIStyle
+            {
+                fontSize = 17,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.UpperLeft
+            };
+            _styleKey.normal.textColor = _keyColor;
+
+            _styleSection = new GUIStyle
+            {
+                fontSize = 13,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.UpperLeft
+            };
+            _styleSection.normal.textColor = _sectionColor;
 
             _stylesReady = true;
         }
 
-        // ── Controls overlay (bottom-left) ──────────────────────────────────
-
         private void DrawControls()
         {
-            float h = _flyModeActive ? CTRL_H_FLY : CTRL_H;
+            var s = TASConfig.Settings;
+
+            // Compute dynamic height
+            float lineH = 22f;
+            float sectionH = 20f;
+            float totalH = 35  // header + tick + state
+                         + sectionH + lineH * 2  // savestate section
+                         + sectionH + lineH * 2  // macro section
+                         + sectionH + lineH * 3  // playback section
+                         + sectionH + lineH       // ui section
+                         + 14;                    // padding
+
             float x = PAD;
-            float y = Screen.height - h - PAD;
+            float y = Screen.height - totalH - PAD;
 
-            DrawBox(x, y, CTRL_W, h);
+            DrawBox(x, y, CTRL_W, totalH);
 
-            float cx = x + 10;
-            float cy = y + 12;
+            float cx = x + 12;
+            float cy = y + 10;
 
-            // Header
+            // ── Header ───────────────────────────────────────────────
             _styleHeader.normal.textColor = _headerColor;
-            GUI.Label(new Rect(cx, cy, CTRL_W - 20, 28), "  FLIPPING IS HARD TRAINER", _styleHeader);
-            cy += 28;
+            GUI.Label(new Rect(cx, cy, CTRL_W - 20, 26), "  Flipping is Hard TAS", _styleHeader);
+            cy += 30; // extra space below title
 
-            // Fly mode status
-            if (_flyModeActive)
+            // Tick + State on same row
+            _styleText.normal.textColor = _savedColor;
+            GUI.Label(new Rect(cx, cy, 190, 22), $"  TICK: {_currentTick}", _styleText);
+
+            string stateStr;
+            Color stateColor;
+            if (_isRecording)
             {
-                _styleText.normal.textColor = _flyColor;
-                GUI.Label(new Rect(cx, cy, CTRL_W - 20, 24), "  \u00bb FLY MODE ACTIVE", _styleText);
-                cy += 24;
-                _styleText.normal.textColor = _dimColor;
-                GUI.Label(new Rect(cx, cy, CTRL_W - 20, 24), "     WASD / Space / Ctrl  +  Shift=Turbo", _styleText);
-                cy += 24;
+                stateStr = "● REC"; stateColor = _recColor;
+            }
+            else if (_isPlaying && _isPaused)
+            {
+                stateStr = "⏸ PAUSED (REPLAY)"; stateColor = _pauseColor;
+            }
+            else if (_isPlaying && _isSlowMoBoost)
+            {
+                stateStr = "▶ REPLAY ×0.3"; stateColor = _playColor;
+            }
+            else if (_isPlaying && _isSlowMo)
+            {
+                stateStr = "▶ REPLAY ×0.1"; stateColor = _playColor;
+            }
+            else if (_isPlaying)
+            {
+                stateStr = "▶ REPLAY"; stateColor = _playColor;
+            }
+            else if (_isPaused)
+            {
+                stateStr = "⏸ PAUSED"; stateColor = _pauseColor;
+            }
+            else if (_isSlowMoBoost)
+            {
+                stateStr = "▶ SLOW ×0.3"; stateColor = _playColor;
+            }
+            else if (_isSlowMo)
+            {
+                stateStr = "▶ SLOW ×0.1"; stateColor = _playColor;
+            }
+            else
+            {
+                stateStr = "■ IDLE"; stateColor = _dimColor;
             }
 
-            // Shift+R
-            _styleText.normal.textColor = Color.white;
-            GUI.Label(new Rect(cx, cy, CTRL_W - 20, 24), _strSave, _styleText);
-            cy += 24;
+            _styleText.normal.textColor = stateColor;
+            GUI.Label(new Rect(cx + 180, cy, CTRL_W - 200, 20), stateStr, _styleText);
+            cy += 22;
 
-            // R
-            _styleText.normal.textColor = _hasSavedPosition ? _savedColor : _dimColor;
-            GUI.Label(new Rect(cx, cy, CTRL_W - 20, 24), _hasSavedPosition ? _strTelReady : _strTelSave, _styleText);
-            cy += 24;
+            // ── Savestate ─────────────────────────────────────────────
+            DrawSectionLabel(cx, ref cy, "SAVESTATE");
+            DrawKeyRow(cx, ref cy,
+                $"[{s.SavePosition}] Save",
+                $"[{s.Teleport}] Load",
+                _hasSavedPosition ? _savedColor : _dimColor);
 
-            // F
-            _styleText.normal.textColor = _ctrlColor;
-            GUI.Label(new Rect(cx, cy, CTRL_W - 20, 24), _strFly, _styleText);
-            cy += 24;
+            // ── Macro ─────────────────────────────────────────────────
+            DrawSectionLabel(cx, ref cy, "MACRO");
+            DrawKeyRow(cx, ref cy,
+                $"[{s.RecordMacro}] Record",
+                $"[{s.PlayMacro}] Play / Stop",
+                _isRecording ? _recColor : (_isPlaying ? _playColor : Color.white));
 
-            // V
-            _styleText.normal.textColor = _keepVelocityActive ? _savedColor : _dimColor;
-            GUI.Label(new Rect(cx, cy, CTRL_W - 20, 24), _keepVelocityActive ? _strVelOn : _strVelOff, _styleText);
-            cy += 24;
+            // ── Playback Controls ────────────────────────────────────────
+            DrawSectionLabel(cx, ref cy, "PLAYBACK CONTROLS");
+            DrawKeySingle(cx, ref cy, $"[{s.Pause}] Pause / Resume", _isPaused ? _pauseColor : _dimColor);
+            DrawKeySingle(cx, ref cy, $"[{s.FrameAdvance}] Frame Advance  (hold = 10/s)", _isPaused ? _keyColor : _dimColor);
 
-            // C
-            _styleText.normal.textColor = _keepAngleActive ? _savedColor : _dimColor;
-            GUI.Label(new Rect(cx, cy, CTRL_W - 20, 24), _keepAngleActive ? _strAngOn : _strAngOff, _styleText);
-            cy += 24;
-            
-            // Menu
-            _styleText.normal.textColor = _dimColor;
-            GUI.Label(new Rect(cx, cy, CTRL_W - 20, 24), _strMenu, _styleText);
+            // SlowMo row + optional boost hint below it (shown only when slowmo active)
+            DrawKeySingle(cx, ref cy, $"[{s.SlowMo}] Slow Motion (×0.1)", _isSlowMo ? _playColor : _dimColor);
+            if (_isSlowMo)
+            {
+                Color boostCol = _isSlowMoBoost ? new Color(1f, 0.55f, 0.1f) : _dimColor;
+                DrawKeySingle(cx, ref cy, $"  └ [{s.SlowMoBoost}] Boost (×0.3)", boostCol);
+            }
+
+            // ── UI ────────────────────────────────────────────────────
+            DrawSectionLabel(cx, ref cy, "INTERFACE");
+            DrawKeySingle(cx, ref cy, $"[{s.OpenBindMenu}] Open Settings", _dimColor);
         }
 
-        // ── Coordinates overlay (top-right) ─────────────────────────────────
+        private void DrawSectionLabel(float x, ref float y, string title)
+        {
+            GUI.color = _sectionColor;
+            GUI.Label(new Rect(x + 2, y, CTRL_W - 20, 18), $"— {title} —", _styleSection);
+            GUI.color = Color.white;
+            y += 19;
+        }
+
+        private void DrawKeyRow(float x, ref float y, string left, string right, Color col)
+        {
+            _styleKey.normal.textColor = col;
+            GUI.Label(new Rect(x + 4, y, (CTRL_W - 20) / 2, 20), left, _styleKey);
+            GUI.Label(new Rect(x + 4 + (CTRL_W - 20) / 2, y, (CTRL_W - 20) / 2, 20), right, _styleKey);
+            GUI.color = Color.white;
+            y += 22;
+        }
+
+        private void DrawKeySingle(float x, ref float y, string text, Color col)
+        {
+            _styleKey.normal.textColor = col;
+            GUI.Label(new Rect(x + 4, y, CTRL_W - 20, 20), text, _styleKey);
+            GUI.color = Color.white;
+            y += 22;
+        }
 
         private void DrawCoords()
         {
@@ -210,8 +273,6 @@ namespace FlippingIsHardTrainer
             GUI.Label(new Rect(cx, cy, COORD_W - 24, 22), _cachedCoordsStr, _styleText);
         }
 
-        // ── Helpers ──────────────────────────────────────────────────────────
-
         private void DrawBox(float x, float y, float w, float h)
         {
             Color orig = GUI.color;
@@ -221,10 +282,10 @@ namespace FlippingIsHardTrainer
 
             float b = 2f;
             GUI.color = _borderColor;
-            GUI.Box(new Rect(x,         y,         w, b), GUIContent.none); // top
-            GUI.Box(new Rect(x,         y + h - b, w, b), GUIContent.none); // bottom
-            GUI.Box(new Rect(x,         y,         b, h), GUIContent.none); // left
-            GUI.Box(new Rect(x + w - b, y,         b, h), GUIContent.none); // right
+            GUI.Box(new Rect(x,         y,         w, b), GUIContent.none);
+            GUI.Box(new Rect(x,         y + h - b, w, b), GUIContent.none);
+            GUI.Box(new Rect(x,         y,         b, h), GUIContent.none);
+            GUI.Box(new Rect(x + w - b, y,         b, h), GUIContent.none);
 
             GUI.color = orig;
         }

@@ -1,84 +1,70 @@
-# Flipping is Hard - Practice Trainer (BepInEx Edition)
+# Flipping is Hard — TAS Tool
 
-A highly optimized Unity IL2CPP BepInEx plugin for "Flipping is Hard Demo" that enables position saving/restoring and a smooth fly mode for speedrun practice. Perfect for mastering difficult sections without restarting.
+A **BepInEx** mod for *Flipping is Hard (Demo)* that adds full TAS (Tool-Assisted Speedrun) functionality: input recording & playback, savestates, frame advance, slow-motion, and a real-time overlay HUD.
 
-![Trainer Overlay](https://img.shields.io/badge/Status-Working-brightgreen) ![Platform](https://img.shields.io/badge/Platform-Windows-blue) ![License](https://img.shields.io/badge/License-MIT-green)
+---
 
-## ✨ Features
-- **📌 Advanced Position Save/Restore** - Save any position with `Shift+R`, teleport back with `R`
-  - Toggle `V`: Preserve physical momentum (speed) when teleporting, or drop completely still
-  - Toggle `C`: Apply preserved momentum in the original global direction, or relative to your current camera view
-- **✈️ Smooth Noclip Fly Mode** - Toggle free-camera ghost flight with `F` key
-  - Physics-integrated movement for buttery smooth traversal
-  - Noclip enabled: Fly directly through walls, floors, and obstacles
-  - Camera-relative movement with WASD (follows where you look)
-  - Vertical movement with Space/Ctrl
-  - Speed boost with Shift (3x faster)
-- **⚙️ In-Game Customizable Keybinds** - Press `B` to open the fully featured Bind Menu!
-  - Remap any trainer action directly inside the game.
-  - Automatically isolates inputs so you don't accidentally move while editing.
-  - Auto-creates and saves to `com.flippingishard.trainer.json` in BepInEx config.
-- **📍 Real-time Telemetry** - HUD in the top-right corner showing current `SPEED`, `HEIGHT`, and `XYZ` position
-- **🎮 Smart Overlay** - Real-time UI showing controls, active toggles, and saved position state
-- **⚡ Ultra Optimized** - Rewritten from scratch to eliminate lag spikes and stuttering during gameplay.
+## Features
 
-## 🚀 Quick Start
+| Feature | Description |
+|---------|-------------|
+| 🎥 **Input Recording** | Records every physics tick of movement, look, camera and physics state |
+| ▶ **Deterministic Playback** | Replays inputs with full state injection before each physics tick — no desync |
+| 💾 **Savestates** | Save and load player position / velocity at any moment |
+| ⏸ **Pause / Frame Advance** | Pause time and step exactly 1 physics tick per press; hold for 10 ticks/sec |
+| 🐢 **Slow Motion** | Run game at ×0.1 speed; hold boost key for ×0.3 |
+| 🖥 **HUD Overlay** | Always-on display of state, tick counter, speed, position and all keybinds |
+| ⌨ **Configurable Keybinds** | In-game menu to remap every single action |
 
-### 1. **Requirements**
-- [Flipping is Hard Demo](https://store.steampowered.com/app/4111020/Flipping_is_Hard/) (Steam).
-- [BepInEx 6 (IL2CPP)](https://github.com/BepInEx/BepInEx/releases) installed in your game directory.
+---
 
-### 2. **Installation**
-1. Download the latest `FlippingIsHardTrainer.dll` from the Releases tab.
-2. Place the `.dll` file into your `BepInEx/plugins/` folder.
-3. Start the game.
+## Installation
 
-### 3. **Use In-Game**
-- **`B`** → Open the **Keybinds Menu** to customize all controls in real-time.
-- **`Shift + R`** → Save current position, rotation, and physical velocity
-- **`R`** → Teleport to saved position
-- **`V`** → Toggle restoring physical velocity upon teleport
-- **`C`** → Toggle restoring angle/trajectory globally vs camera-relative
-- **`F`** → Toggle Smooth Noclip Fly Mode ON/OFF
-- **Fly Mode Controls:**
-  - `W` / `S` → Move forward/backward (relative to camera)
-  - `A` / `D` → Move left/right (relative to camera)
-  - `Space` → Move up (world space)
-  - `Ctrl` → Move down (world space)
-  - **`Shift` (hold)** → Speed boost (3x faster)
+1. Install **BepInEx 6** (IL2CPP) for *Flipping is Hard*
+2. Build the project (`dotnet build`) or grab the latest `.dll` from [Releases](../../releases)
+3. Drop `FlippingIsHardTAS.dll` into `BepInEx/plugins/`
+4. Launch the game — the HUD appears immediately
 
-## 📁 Project Structure
-```text
-Trainer/
-├── FlippingIsHardTrainer.csproj # .NET 6 Project configuration
-├── TrainerPlugin.cs             # Main BepInEx entry point
-├── TrainerController.cs         # Core logic and optimization
-├── TrainerConfig.cs             # Configuration and JSON save/load system
-├── BindMenuRenderer.cs          # In-game interactive UI for custom keybinds
-├── GameObjectFinder.cs          # Smart and lag-free player finder
-├── InputHandler.cs              # Keyboard hook
-├── OverlayRenderer.cs           # HUD Renderer
-└── README.md                    # This file
+---
+
+## Default Keybinds
+
+| Action | Key |
+|--------|-----|
+| Save Position | `Shift + R` |
+| Load Position | `R` |
+| Record Macro | `F9` |
+| Play Macro | `F10` |
+| Pause / Resume | `F11` |
+| Frame Advance | `.` (hold = 10/s) |
+| Slow Motion (×0.1) | `F12` |
+| Slow-Mo Boost (×0.3) | `E` (hold while slow-mo active) |
+| Open Settings | `B` |
+
+All binds are remappable in-game via the **Settings menu** (`B`).
+
+---
+
+## Building from Source
+
+**Requirements:** .NET 6, BepInEx 6 IL2CPP, Unity game DLLs referenced in the `.csproj`
+
+```bash
+dotnet build
 ```
 
-## 🔧 Building from Source
-If you want to compile the mod yourself:
-1. Clone the repository.
-2. Ensure you have the **.NET 6.0 SDK** installed.
-3. Run the command `dotnet build -c Release` in the project root.
-4. The `.dll` file will be generated in the `bin/Release/net6.0/` folder.
+Output: `bin/Debug/net6.0/FlippingIsHardTAS.dll`
 
-## 🤝 Contributing
-Found a bug or have an improvement? Feel free to:
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request
+---
 
-## 📄 License
-MIT License - See [LICENSE](LICENSE) file for details.
+## How It Works
 
-Free for personal, educational, and non-commercial use.
+- **Recording**: Each FishNet physics tick, the mod captures `TASInputState` (move vector, look vector, all button states, camera pose, rigidbody velocity + angular velocity + position + rotation).
+- **Playback**: On `OnPrePhysicsSimulation`, the full recorded state (position, rotation, velocity) is injected into the Rigidbody *before* PhysX simulates — giving deterministic results and letting `RigidbodyInterpolation.Interpolate` produce smooth visuals between 50 Hz physics ticks and high-refresh rendering.
+- **Offline mode**: FishNet's multiplayer stack is kept active but forced into offline/host mode; the LAN discovery service is suppressed.
 
-## 🙏 Credits
-- **Game**: "Flipping is Hard" by Elegant Horse Studios
-- **Disclaimer**: This tool is for educational purposes and single-player practice only. Use responsibly.
+---
+
+## License
+
+MIT — do whatever you want, credits appreciated.

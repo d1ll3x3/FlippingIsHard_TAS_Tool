@@ -3,8 +3,8 @@
 
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
-    <AssemblyName>FlippingIsHardTrainer</AssemblyName>
-    <RootNamespace>FlippingIsHardTrainer</RootNamespace>
+    <AssemblyName>FlippingIsHardTAS</AssemblyName>
+    <RootNamespace>FlippingIsHardTAS</RootNamespace>
     <Version>1.0.0</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
@@ -50,6 +50,23 @@
       <HintPath>lib\Il2CppSystem.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="EHS.Core.Components">
+      <HintPath>lib\EHS.Core.Components.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>lib\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Cinemachine">
+      <HintPath>lib\Unity.Cinemachine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FishNet.Runtime">
+      <HintPath>lib\FishNet.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>
+

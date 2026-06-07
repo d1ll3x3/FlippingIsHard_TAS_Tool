@@ -1,9 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
-namespace FlippingIsHardTrainer
+namespace FlippingIsHardTAS
 {
     public class GameObjectFinder
     {
@@ -12,7 +12,7 @@ namespace FlippingIsHardTrainer
         private Rigidbody _cachedPlayerRigidbody;
         private GameObject _cachedCamera;
         
-        // Tiempo de espera (cooldown) si la búsqueda falla, para no inundar el log ni causar lag
+        // Tiempo de espera (cooldown) si la bÃºsqueda falla, para no inundar el log ni causar lag
         private float _playerSearchCooldown = 0f;
         private float _cameraSearchCooldown = 0f;
         private const float SEARCH_COOLDOWN_DURATION = 2f;
@@ -56,7 +56,7 @@ namespace FlippingIsHardTrainer
                 // Silent catch
             }
             
-            // Si llegamos aquí, no lo encontró, aplicamos cooldown de 2 segundos antes de volver a buscar
+            // Si llegamos aquÃ­, no lo encontrÃ³, aplicamos cooldown de 2 segundos antes de volver a buscar
             _playerSearchCooldown = Time.time + SEARCH_COOLDOWN_DURATION;
             _cachedPlayerRigidbody = null;
             return null;
@@ -86,7 +86,7 @@ namespace FlippingIsHardTrainer
                 // Silent catch
             }
             
-            // Si llegamos aquí, no lo encontró, aplicamos cooldown de 2 segundos antes de volver a buscar
+            // Si llegamos aquÃ­, no lo encontrÃ³, aplicamos cooldown de 2 segundos antes de volver a buscar
             _cameraSearchCooldown = Time.time + SEARCH_COOLDOWN_DURATION;
             return null;
         }
