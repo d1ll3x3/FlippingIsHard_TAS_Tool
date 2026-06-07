@@ -671,30 +671,21 @@ namespace FlippingIsHardTAS
             try
             {
                 _cameraOverrideActive = false;
-                _overrideCameraState = null; // clear custom state
-                
-                // Re-inject orbital axes so Cinemachine's internal state
-                // matches Camera.main.transform when Brain re-enables
-                SavestateSystem.SaveStateData state = _savestateSystem.GetLastLoadedState();
-                if (state != null)
-                    InjectOrbitalAxes(state, _gameObjectFinder);
+                _overrideCameraState = null;
                 
                 // Clear damping history so Cinemachine starts fresh from current camera state
                 if (_overrideCinCam != null)
                 {
                     _overrideCinCam.PreviousStateIsValid = false;
                     
-                    // Try ForceCameraPosition (Cinemachine 3.x) with explicit parameter types
+                    // Try ForceCameraPosition (Cinemachine 3.x) via reflection
                     try
                     {
                         var method = _overrideCinCam.GetType().GetMethod("ForceCameraPosition",
-                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
-                            null, new Type[] { typeof(Vector3), typeof(Quaternion) }, null);
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
                         if (method != null && Camera.main != null)
                         {
-                            Quaternion rot = Camera.main.transform.rotation;
-                            rot.Normalize();
-                            method.Invoke(_overrideCinCam, new object[] { Camera.main.transform.position, rot });
+                            method.Invoke(_overrideCinCam, new object[] { Camera.main.transform.position, Camera.main.transform.rotation });
                             TASPlugin.Logger.LogInfo("[CamRestore] ForceCameraPosition called successfully.");
                         }
                     }
