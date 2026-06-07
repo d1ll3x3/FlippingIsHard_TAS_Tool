@@ -24,8 +24,22 @@ A **BepInEx** mod for *Flipping is Hard (Demo)* that adds full TAS (Tool-Assiste
 
 1. Install **BepInEx 6** (IL2CPP) for *Flipping is Hard*
 2. Build the project (`dotnet build`) or grab the latest `.dll` from [Releases](../../releases)
-3. Drop `FlippingIsHardTAS.dll` into `BepInEx/plugins/`
-4. Launch the game — the HUD appears immediately
+3. Create a folder named `FlippingIsHardTAS` inside your `BepInEx/plugins/` directory.
+4. Drop `FlippingIsHardTAS.dll` into the new folder.
+5. Launch the game — the HUD appears immediately.
+
+### Folder Structure
+Your installation should look exactly like this:
+```text
+Flipping is Hard Demo/BepInEx/
+├── config/
+│   └── com.flippingishard.tas.json
+└── plugins/
+    └── FlippingIsHardTAS/
+        ├── FlippingIsHardTAS.dll
+        └── Macros/
+            └── (your exported .tas macro files)
+```
 
 ---
 
