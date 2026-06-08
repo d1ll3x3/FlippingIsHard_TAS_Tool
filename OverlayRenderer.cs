@@ -135,7 +135,7 @@ namespace FlippingIsHardTAS
             float sectionH = 20f;
             float totalH = 35  // header + tick + state
                          + sectionH + lineH * 2  // savestate section
-                         + sectionH + lineH * 3  // macro section (Record, Play, Edit)
+                         + sectionH + lineH * 4  // macro section (Record, Play, Reset, Edit)
                          + sectionH + lineH * 4  // playback section (Pause, FrameAdv, Rewind, SlowMo)
                          + sectionH + lineH       // ui section
                          + 14;                    // padding
@@ -217,6 +217,7 @@ namespace FlippingIsHardTAS
                 $"[{s.RecordMacro}] Record",
                 $"[{s.PlayMacro}] Play / Stop",
                 _isRecording ? _recColor : (_isPlaying ? _playColor : Color.white));
+            DrawKeySingle(cx, ref cy, $"[{s.ResetTick}] Reset Tick", _dimColor);
             DrawKeySingle(cx, ref cy, $"[{s.EditMacro}] Edit Macro", _isEditMode ? new Color(1f, 0.5f, 0f) : _dimColor);
 
             // ── Playback Controls ────────────────────────────────────────

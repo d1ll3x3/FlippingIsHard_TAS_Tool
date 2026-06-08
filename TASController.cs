@@ -23,6 +23,7 @@ namespace FlippingIsHardTAS
         private bool _wasFrameAdvancePressed = false;
         private bool _wasEditModePressed = false;
         private bool _wasRewindPressed = false;
+        private bool _wasResetTickPressed = false;
         private float _lastRewindTime = 0f;
 
         // Component references
@@ -442,7 +443,10 @@ namespace FlippingIsHardTAS
                 _timeController.TickFrameAdvance(justPressed: !_wasFrameAdvancePressed);
 
             bool isRewindPressed = TASConfig.Settings.RewindTick.IsPressed();
-            if (isRewindPressed && _timeController.IsPaused && _macroSystem.IsPlaying && !_macroSystem.IsEditMode && _timeController.CurrentTick > 0)
+            bool canRewind = _timeController.IsPaused && !_macroSystem.IsEditMode && _timeController.CurrentTick > 0;
+            bool canRewindRec = _timeController.IsPaused && (_macroSystem.IsEditMode || _macroSystem.IsRecording) && _timeController.CurrentTick > 0;
+            
+            if (isRewindPressed && (canRewind && _macroSystem.IsPlaying || canRewindRec))
             {
                 bool shouldRewind = !_wasRewindPressed;
                 if (!shouldRewind)
@@ -460,7 +464,12 @@ namespace FlippingIsHardTAS
                 }
                 
                 if (shouldRewind)
-                    RewindOneTick();
+                {
+                    if (_macroSystem.IsPlaying)
+                        RewindOneTick();
+                    else
+                        RewindRecording(_timeController.CurrentTick - 1);
+                }
             }
 
             _wasTeleportPressed   = isTeleportPressed;
@@ -473,6 +482,16 @@ namespace FlippingIsHardTAS
             _wasFrameAdvancePressed = isFrameAdvancePressed;
             _wasEditModePressed = isEditModePressed;
             _wasRewindPressed = isRewindPressed;
+            
+            // Reset Tick (F5)
+            bool isResetTickPressed = TASConfig.Settings.ResetTick.IsPressed();
+            if (isResetTickPressed && !_wasResetTickPressed)
+            {
+                _timeController.SetTick(0);
+                if (_macroSystem.IsRecording)
+                    _macroSystem.RecordedInputs.Clear();
+            }
+            _wasResetTickPressed = isResetTickPressed;
         }
         
         private void StartPlaybackWithAxes(ulong startTick)
@@ -574,12 +593,32 @@ namespace FlippingIsHardTAS
         
         private void RewindOneTick()
         {
+            RewindToTick(_timeController.CurrentTick - 1);
+            if (_macroSystem.IsPlaying)
+            {
+                _macroSystem.PlaybackTick(_timeController.CurrentTick);
+                _macroSystem.PlaybackTick(_timeController.CurrentTick);
+            }
+        }
+        
+        /// <summary>
+        /// Rewinds during recording/Edit Mode: restores state + sets cut point for deferred truncation.
+        /// </summary>
+        private void RewindRecording(ulong targetTick)
+        {
+            RewindToTick(targetTick);
+            _macroSystem.SetRewindCutPoint(targetTick);
+        }
+        
+        /// <summary>
+        /// Common rewind logic: restore player, camera, orbital axes at target tick.
+        /// </summary>
+        private void RewindToTick(ulong targetTick)
+        {
+            if (_cachedRb == null) _cachedRb = _gameObjectFinder.GetCachedPlayerRigidbody();
+            if (_cachedRb == null) return;
             try
             {
-                if (_cachedRb == null) _cachedRb = _gameObjectFinder.GetCachedPlayerRigidbody();
-                if (_cachedRb == null) return;
-                
-                ulong targetTick = _timeController.CurrentTick - 1;
                 var state = _macroSystem.GetStateAtTick(targetTick);
                 if (state == null) return;
                 
@@ -609,12 +648,6 @@ namespace FlippingIsHardTAS
                 ForceCinemachineUpdate();
                 
                 _timeController.SetTick(targetTick);
-                
-                if (_macroSystem.IsPlaying)
-                {
-                    _macroSystem.PlaybackTick(targetTick);
-                    _macroSystem.PlaybackTick(targetTick);
-                }
             }
             catch (Exception ex)
             {
