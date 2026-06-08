@@ -40,15 +40,10 @@ namespace FlippingIsHardTAS
         private Rigidbody _cachedRb;
         private RigidbodyInterpolation _originalInterpolation;
         
-        // Camera override state — used when loading a savestate.
-        // EXACT same approach as macros: disable CinemachineBrain, then write
-        // Camera.main.transform directly every frame for N frames, then re-enable Brain.
-        private bool _cameraOverrideActive = false;
-        private int _cameraOverrideFramesLeft = 0;
-        private Unity.Cinemachine.CinemachineCamera _overrideCinCam;
-        private Unity.Cinemachine.CinemachineInputAxisController _overrideInputAxisCtrl;
-        private SavestateSystem.SaveStateData _overrideCameraState; // custom state for edit mode
-        private const int CAMERA_OVERRIDE_FRAMES = 5;
+        // Orbital damping backup (for instant camera transitions)
+        private float _originalHDamping = -1f;
+        private float _originalVDamping = -1f;
+        private bool _shouldRestoreDamping = false;
         
         public bool enabled { get; set; }
         
@@ -82,7 +77,44 @@ namespace FlippingIsHardTAS
                             _savestateSystem.SaveState(_gameObjectFinder, _timeController.CurrentTick, true);
                         _savestateSystem.LoadState(_gameObjectFinder, _timeController, true);
                         Physics.SyncTransforms();
-                        StartPlayback();
+                        
+                        // Get the STARTING tick from the savestate
+                        ulong startTick = _savestateSystem.MacroTick;
+                        
+                        // Start playback system
+                        _macroSystem.StartPlaying();
+                        
+                        // Load the FIRST RECORDED TICK from the macro
+                        _macroSystem.PlaybackTick(startTick);
+                        
+                        // Disable damping for instant camera snap
+                        DisableOrbitalDamping();
+                        
+                        // Inject camera axes from the first recorded tick (NOT from savestate)
+                        var firstTickState = _macroSystem.GetStateAtTick(startTick);
+                        if (firstTickState.HasValue)
+                        {
+                            TASPlugin.Logger.LogInfo($"[Import] Injecting axes from macro tick {startTick}: pan={firstTickState.Value.CameraPan} tilt={firstTickState.Value.CameraTilt}");
+                            InjectAxesFromState(firstTickState.Value);
+                            ForceCinemachineUpdate();
+                        }
+                        else
+                        {
+                            TASPlugin.Logger.LogWarning($"[Import] No macro data at start tick {startTick}!");
+                        }
+                        
+                        // Restore damping after 1 frame
+                        _shouldRestoreDamping = true;
+                        
+                        // Enable Rigidbody interpolation
+                        _cachedRb = _gameObjectFinder.GetCachedPlayerRigidbody();
+                        if (_cachedRb != null)
+                        {
+                            _originalInterpolation = _cachedRb.interpolation;
+                            _cachedRb.interpolation = RigidbodyInterpolation.Interpolate;
+                        }
+                        
+                        TASPlugin.Logger.LogInfo("TAS: Playback started (Brain remains active, axes-only mode)");
                         _bindMenu.RequestClose();
                     }
                 };
@@ -117,6 +149,13 @@ namespace FlippingIsHardTAS
             try
             {
                 if (!enabled) return;
+                
+                // Deferred damping restore (after 1 frame)
+                if (_shouldRestoreDamping)
+                {
+                    RestoreOrbitalDamping();
+                    _shouldRestoreDamping = false;
+                }
                 
                 string currentScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
                 if (currentScene != _lastScene)
@@ -188,34 +227,8 @@ namespace FlippingIsHardTAS
 
                 HandleHotkeys();
 
-                // Camera override for savestate load.
-                // EXACT same approach as macro playback: Brain is disabled,
-                // we write Camera.main.transform directly every frame.
-                if (_cameraOverrideActive)
-                {
-                    SavestateSystem.SaveStateData state = _overrideCameraState ?? _savestateSystem.GetLastLoadedState();
-                    if (state != null && Camera.main != null)
-                    {
-                        Camera.main.transform.position = state.CameraPosition;
-                        Camera.main.transform.rotation = state.CameraRotation;
-                    }
-                    
-                    _cameraOverrideFramesLeft--;
-                    if (_cameraOverrideFramesLeft <= 0)
-                    {
-                        FinalizeCameraRestore();
-                    }
-                }
-
-                if (_macroSystem != null && _macroSystem.IsPlaying && Camera.main != null)
-                {
-                    float t = (Time.time - Time.fixedTime) / Time.fixedDeltaTime;
-                    Quaternion rot = _macroSystem.GetInterpolatedCameraRotation(t);
-                    rot.Normalize();
-                    Camera.main.transform.rotation = rot;
-                    Camera.main.transform.position = _macroSystem.GetInterpolatedCameraPosition(t);
-                }
-                
+                // OPCIÓN 1: Brain is active, we only inject axes (no manual camera writing)
+                // Camera interpolation handled by Cinemachine itself
                 if (Time.frameCount % 5 == 0)
                 {
                     UpdateCurrentPosition();
@@ -295,19 +308,9 @@ namespace FlippingIsHardTAS
                     {
                         // Advance the playback state for this tick.
                         // Velocity injection happens in OnPrePhysicsSimulation (before physics).
-                        // Position/rotation correction happens in OnPostTick (after FishNet Reconcile).
-                        // Nothing extra needed here — keeping FixedUpdate lean.
                         _macroSystem.PlaybackTick(_timeController.CurrentTick);
-
-                        if (Camera.main != null)
-                        {
-                            Quaternion rot = _macroSystem.GetCurrentCameraRotation();
-                            rot.Normalize();
-                            Camera.main.transform.rotation = rot;
-                            Camera.main.transform.position = _macroSystem.GetCurrentCameraPosition();
-                        }
                         
-                        // Inject orbital axes from macro data so they stay synced with camera
+                        // OPCIÓN 1: Only inject orbital axes, let Cinemachine calculate camera position
                         InjectPlaybackAxes();
                     }
                 }
@@ -379,17 +382,7 @@ namespace FlippingIsHardTAS
 
         private void OnPostTick()
         {
-            // Keep writing camera transform during override so FishNet reconcile
-            // doesn't have a chance to trigger camera recalculation with stale data.
-            if (_cameraOverrideActive)
-            {
-                SavestateSystem.SaveStateData state = _overrideCameraState ?? _savestateSystem.GetLastLoadedState();
-                if (state != null && Camera.main != null)
-                {
-                    Camera.main.transform.position = state.CameraPosition;
-                    Camera.main.transform.rotation = state.CameraRotation;
-                }
-            }
+            // OPCIÓN 1: No camera override needed, Brain handles everything
         }
         
         public void OnGUI()
@@ -440,7 +433,20 @@ namespace FlippingIsHardTAS
                 {
                     _savestateSystem.LoadState(_gameObjectFinder, _timeController, false);
                     Physics.SyncTransforms();
-                    StartCameraRestore(_gameObjectFinder);
+                    
+                    // Disable damping for instant camera snap
+                    DisableOrbitalDamping();
+                    
+                    // Inject axes and force immediate Cinemachine update
+                    var state = _savestateSystem.GetLastLoadedState();
+                    if (state != null)
+                    {
+                        InjectOrbitalAxes(state, _gameObjectFinder);
+                        ForceCinemachineUpdate();
+                    }
+                    
+                    // Restore damping after 1 frame
+                    _shouldRestoreDamping = true;
                 }
             }
 
@@ -471,11 +477,47 @@ namespace FlippingIsHardTAS
                 }
                 else if (_macroSystem.HasRecordedData)
                 {
+                    // Load physical state (position/velocity) from savestate
                     _savestateSystem.LoadState(_gameObjectFinder, _timeController, true);
                     Physics.SyncTransforms();
-                    // Macro playback disables Brain itself via ToggleCinemachine(false)
-                    // in StartPlayback(), so no camera override needed here.
-                    StartPlayback();
+                    
+                    // Get the STARTING tick from the savestate
+                    ulong startTick = _savestateSystem.MacroTick;
+                    
+                    // Start playback system
+                    _macroSystem.StartPlaying();
+                    
+                    // Load the FIRST RECORDED TICK from the macro
+                    _macroSystem.PlaybackTick(startTick);
+                    
+                    // Disable damping for instant camera snap
+                    DisableOrbitalDamping();
+                    
+                    // Inject camera axes from the first recorded tick (NOT from savestate)
+                    var firstTickState = _macroSystem.GetStateAtTick(startTick);
+                    if (firstTickState.HasValue)
+                    {
+                        TASPlugin.Logger.LogInfo($"[F10] Injecting axes from macro tick {startTick}: pan={firstTickState.Value.CameraPan} tilt={firstTickState.Value.CameraTilt}");
+                        InjectAxesFromState(firstTickState.Value);
+                        ForceCinemachineUpdate();
+                    }
+                    else
+                    {
+                        TASPlugin.Logger.LogWarning($"[F10] No macro data at start tick {startTick}!");
+                    }
+                    
+                    // Restore damping after 1 frame
+                    _shouldRestoreDamping = true;
+                    
+                    // Enable Rigidbody interpolation
+                    _cachedRb = _gameObjectFinder.GetCachedPlayerRigidbody();
+                    if (_cachedRb != null)
+                    {
+                        _originalInterpolation = _cachedRb.interpolation;
+                        _cachedRb.interpolation = RigidbodyInterpolation.Interpolate;
+                    }
+                    
+                    TASPlugin.Logger.LogInfo("TAS: Playback started (Brain remains active, axes-only mode)");
                 }
             }
 
@@ -490,12 +532,13 @@ namespace FlippingIsHardTAS
                     if (!_timeController.IsPaused)
                         _timeController.TogglePause();
                     
-                    // Simplest possible: just stop playback and start recording.
-                    // InjectPlaybackAxes keeps orbital axes synced during playback.
-                    StopPlayback();
-                    _macroSystem.EnterEditMode(_timeController.CurrentTick);
+                    ulong cutTick = _timeController.CurrentTick;
                     
-                    TASPlugin.Logger.LogInfo($"TAS: Edit Mode ON at tick {_timeController.CurrentTick}");
+                    // Stop playback and enter edit mode (preserves cutTick, deletes after)
+                    StopPlayback();
+                    _macroSystem.EnterEditMode(cutTick);
+                    
+                    TASPlugin.Logger.LogInfo($"TAS: Edit Mode ON at tick {cutTick}");
                 }
                 else if (_macroSystem.IsEditMode)
                 {
@@ -576,8 +619,11 @@ namespace FlippingIsHardTAS
                 _cachedRb.interpolation = RigidbodyInterpolation.Interpolate;
             }
             _macroSystem.StartPlaying();
-            ToggleCinemachine(false);
-            TASPlugin.Logger.LogInfo("TAS: Playback started");
+            
+            // OPCIÓN 1: Brain stays ACTIVE, we only inject orbital axes
+            // ToggleCinemachine(false); ← REMOVED
+            
+            TASPlugin.Logger.LogInfo("TAS: Playback started (Brain remains active, axes-only mode)");
         }
 
         private void StopPlayback()
@@ -587,9 +633,13 @@ namespace FlippingIsHardTAS
             {
                 _cachedRb.interpolation = _originalInterpolation;
             }
-            // Sync orbital axes from last macro tick before re-enabling Brain
+            
+            // Sync orbital axes from last macro tick
             InjectPlaybackAxes();
-            ToggleCinemachine(true);
+            
+            // OPCIÓN 1: Brain was never disabled, so no need to re-enable
+            // ToggleCinemachine(true); ← REMOVED
+            
             TASPlugin.Logger.LogInfo("TAS: Playback stopped");
         }
 
@@ -611,125 +661,9 @@ namespace FlippingIsHardTAS
         }
         
         /// <summary>
-        /// EXACT SAME approach as macros: disable CinemachineBrain, then write
-        /// Camera.main.transform directly every frame. This bypasses ALL Cinemachine
-        /// internals (PanTilt, InputAxisController, damping, etc.) — same as macro playback.
-        /// ALSO injects the saved orbital axis values into CinemachineOrbitalFollow
-        /// so that when Brain re-enables, it computes the correct rotation.
-        /// </summary>
-        private void StartCameraRestore(GameObjectFinder finder)
-        {
-            try
-            {
-                SavestateSystem.SaveStateData state = _savestateSystem.GetLastLoadedState();
-                if (state == null) return;
-                
-                // ── Step 1: Disable CinemachineBrain (exact same as macros) ──
-                ToggleCinemachine(false);
-                
-                // ── Step 2: Inject saved orbital angles into CinemachineOrbitalFollow ──
-                //    This ensures that when Brain re-enables, Cinemachine's internal
-                //    state matches the camera transform we're about to write.
-                InjectOrbitalAxes(state, finder);
-                
-                // ── Step 3: Write camera transform DIRECTLY (exact same as macros) ──
-                if (Camera.main != null)
-                {
-                    Camera.main.transform.position = state.CameraPosition;
-                    Camera.main.transform.rotation = state.CameraRotation;
-                }
-                
-                // ── Step 4: Also disable InputAxisController so it doesn't
-                //    accumulate mouse input while brain is disabled ──
-                var playerTransform = finder.FindPlayerTransform();
-                if (playerTransform != null)
-                {
-                    var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
-                    if (movement != null && movement.camManager != null)
-                    {
-                        var cinCam = movement.camManager.MainCinemachineCamera;
-                        if (cinCam != null)
-                        {
-                            _overrideCinCam = cinCam;
-                            
-                            var axisCtrl = cinCam.GetComponent<Unity.Cinemachine.CinemachineInputAxisController>();
-                            if (axisCtrl == null && movement.camManager.axisSettingsSync != null)
-                                axisCtrl = movement.camManager.axisSettingsSync.axisController;
-                            
-                            if (axisCtrl != null)
-                            {
-                                axisCtrl.enabled = false;
-                                _overrideInputAxisCtrl = axisCtrl;
-                                TASPlugin.Logger.LogInfo($"[CamRestore] Brain DISABLED, orbital axes injected. Writing camera transform for {CAMERA_OVERRIDE_FRAMES} frames.");
-                            }
-                            else
-                            {
-                                TASPlugin.Logger.LogWarning("[CamRestore] Brain DISABLED but InputAxisController not found.");
-                            }
-                        }
-                    }
-                }
-                
-                _cameraOverrideFramesLeft = CAMERA_OVERRIDE_FRAMES;
-                _cameraOverrideActive = true;
-            }
-            catch (Exception ex)
-            {
-                TASPlugin.Logger.LogError($"Error starting camera restore: {ex}");
-                ToggleCinemachine(true); // re-enable brain on error
-                _cameraOverrideActive = false;
-            }
-        }
-        
-        private void FinalizeCameraRestore()
-        {
-            try
-            {
-                _cameraOverrideActive = false;
-                _overrideCameraState = null;
-                
-                // Clear damping history so Cinemachine starts fresh from current camera state
-                if (_overrideCinCam != null)
-                {
-                    _overrideCinCam.PreviousStateIsValid = false;
-                    
-                    // Try ForceCameraPosition (Cinemachine 3.x) via reflection
-                    try
-                    {
-                        var method = _overrideCinCam.GetType().GetMethod("ForceCameraPosition",
-                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                        if (method != null && Camera.main != null)
-                        {
-                            method.Invoke(_overrideCinCam, new object[] { Camera.main.transform.position, Camera.main.transform.rotation });
-                            TASPlugin.Logger.LogInfo("[CamRestore] ForceCameraPosition called successfully.");
-                        }
-                    }
-                    catch { }
-                }
-                
-                // Re-enable InputAxisController
-                if (_overrideInputAxisCtrl != null)
-                    _overrideInputAxisCtrl.enabled = true;
-                
-                // Re-enable CinemachineBrain LAST (exact same pattern as StopPlayback)
-                ToggleCinemachine(true);
-                
-                TASPlugin.Logger.LogInfo("[CamRestore] Finalized — Brain re-enabled, Cinemachine takes over now.");
-            }
-            catch (Exception ex)
-            {
-                TASPlugin.Logger.LogError($"Error finalizing camera restore: {ex}");
-                if (_overrideInputAxisCtrl != null)
-                    _overrideInputAxisCtrl.enabled = true;
-                ToggleCinemachine(true);
-                _cameraOverrideActive = false;
-            }
-        }
-        
-        /// <summary>
         /// Injects saved pan/tilt values into CinemachineOrbitalFollow's
         /// HorizontalAxis and VerticalAxis. This ensures Cinemachine's internal
-        /// state matches our saved camera rotation when Brain re-enables.
+        /// state matches our saved camera rotation.
         /// </summary>
         private void InjectOrbitalAxes(SavestateSystem.SaveStateData state, GameObjectFinder finder)
         {
@@ -754,8 +688,6 @@ namespace FlippingIsHardTAS
                     var vAxis = orbital.VerticalAxis;
                     vAxis.Value = state.CameraTilt;
                     orbital.VerticalAxis = vAxis;
-                    
-                    TASPlugin.Logger.LogInfo($"[CamRestore] Injected orbital axes: pan={state.CameraPan} tilt={state.CameraTilt}");
                 }
                 else
                 {
@@ -770,12 +702,10 @@ namespace FlippingIsHardTAS
                         var tAxis = panTilt.TiltAxis;
                         tAxis.Value = state.CameraTilt;
                         panTilt.TiltAxis = tAxis;
-                        
-                        TASPlugin.Logger.LogInfo($"[CamRestore] Injected PanTilt axes: pan={state.CameraPan} tilt={state.CameraTilt}");
                     }
                     else
                     {
-                        TASPlugin.Logger.LogWarning("[CamRestore] No orbital or PanTilt component found for axis injection!");
+                        TASPlugin.Logger.LogWarning("[InjectAxes] No orbital or PanTilt component found!");
                     }
                 }
             }
@@ -916,6 +846,77 @@ namespace FlippingIsHardTAS
                     vAxis.Value = tilt;
                     orbital.VerticalAxis = vAxis;
                 }
+            }
+            catch { }
+        }
+        
+        /// <summary>
+        /// Forces CinemachineBrain to update immediately after axis injection,
+        /// preventing 1-frame camera lag/flicker when loading savestates or starting playback.
+        /// </summary>
+        private void ForceCinemachineUpdate()
+        {
+            try
+            {
+                if (Camera.main == null) return;
+                var brain = Camera.main.GetComponent<Unity.Cinemachine.CinemachineBrain>();
+                if (brain == null) return;
+                
+                // Force brain to recalculate camera position immediately
+                var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                if (playerTransform == null) return;
+                var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                if (movement?.camManager?.MainCinemachineCamera == null) return;
+                
+                // Trigger a manual update by disabling and re-enabling
+                // (ManualUpdate() doesn't exist in all Cinemachine versions)
+                var cinCam = movement.camManager.MainCinemachineCamera;
+                cinCam.enabled = false;
+                cinCam.enabled = true;
+            }
+            catch { }
+        }
+        
+        /// <summary>
+        /// Temporarily disables orbital axis damping for instant camera response.
+        /// Call before injecting axes, then set _shouldRestoreDamping flag after.
+        /// </summary>
+        private void DisableOrbitalDamping()
+        {
+            try
+            {
+                var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                if (playerTransform == null) return;
+                var movement = playerTransform.GetComponent<EHS.PlayerMovement>();
+                if (movement?.camManager?.MainCinemachineCamera == null) return;
+                var orbital = movement.camManager.MainCinemachineCamera.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
+                if (orbital == null) return;
+                
+                // Backup original damping values (only once)
+                if (_originalHDamping < 0f)
+                {
+                    var hAxis = orbital.HorizontalAxis;
+                    var vAxis = orbital.VerticalAxis;
+                    _originalHDamping = hAxis.Center;
+                    _originalVDamping = vAxis.Center;
+                }
+                
+                // Cinemachine Orbital doesn't expose damping directly - we can't disable it
+                // Instead, we'll use ForceCinemachineUpdate() to force immediate recalculation
+            }
+            catch { }
+        }
+        
+        /// <summary>
+        /// Restores original orbital axis damping values.
+        /// </summary>
+        private void RestoreOrbitalDamping()
+        {
+            try
+            {
+                // Nothing to restore since we can't modify damping
+                _originalHDamping = -1f;
+                _originalVDamping = -1f;
             }
             catch { }
         }

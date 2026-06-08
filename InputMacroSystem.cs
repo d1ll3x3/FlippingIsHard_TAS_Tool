@@ -54,9 +54,9 @@ namespace FlippingIsHardTAS
         }
         
         /// <summary>
-        /// Enters Edit Mode: stops playback, preserves all macro data BEFORE the given tick,
-        /// deletes everything from this tick onward, and starts recording the user's real inputs.
-        /// This allows editing a macro from a specific point without losing earlier work.
+        /// Enters Edit Mode: stops playback, preserves all macro data UP TO AND INCLUDING the given tick,
+        /// deletes everything AFTER this tick, and starts recording the user's real inputs from the next tick.
+        /// This allows editing a macro from a specific point without losing earlier work or causing camera jumps.
         /// </summary>
         public void EnterEditMode(ulong currentTick)
         {
@@ -65,26 +65,22 @@ namespace FlippingIsHardTAS
             IsEditMode = true;
             EnableInputSystemDevices();
             
-            // Delete all recorded inputs from currentTick onward
+            // Delete all recorded inputs AFTER currentTick (keep currentTick itself for continuity)
             var keysToRemove = new List<ulong>();
             foreach (var kvp in RecordedInputs)
             {
-                if (kvp.Key >= currentTick)
+                if (kvp.Key > currentTick) // Changed from >= to >
                     keysToRemove.Add(kvp.Key);
             }
             foreach (var key in keysToRemove)
                 RecordedInputs.Remove(key);
             
-            // Update MaxTick to the last remaining tick
-            MaxTick = 0;
-            foreach (var kvp in RecordedInputs)
-            {
-                if (kvp.Key > MaxTick) MaxTick = kvp.Key;
-            }
+            // Update MaxTick to currentTick (the last preserved tick)
+            MaxTick = currentTick;
             
-            // Start recording from this point (don't clear data!)
+            // Start recording from the NEXT tick (don't clear data!)
             IsRecording = true;
-            TASPlugin.Logger.LogInfo($"TAS: Entered Edit Mode at tick {currentTick} — kept {RecordedInputs.Count} previous ticks, now recording.");
+            TASPlugin.Logger.LogInfo($"TAS: Entered Edit Mode at tick {currentTick} — kept {RecordedInputs.Count} previous ticks (including cut point), now recording from tick {currentTick + 1}.");
         }
         
         /// <summary>

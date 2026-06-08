@@ -9,6 +9,10 @@ namespace FlippingIsHardTAS
     {
         private GameObjectFinder _gameObjectFinder;
         private List<MonoBehaviour> _disabledScripts = new List<MonoBehaviour>();
+        
+        // Camera state backup for menu (fixes coordinate bug)
+        private Vector3 _menuCameraPos;
+        private Quaternion _menuCameraRot;
 
         private bool _isVisible = false;
         private bool _pendingClose = false;
@@ -56,6 +60,18 @@ namespace FlippingIsHardTAS
             }
             else
             {
+                // Backup camera BEFORE disabling scripts
+                if (Camera.main != null)
+                {
+                    _menuCameraPos = Camera.main.transform.position;
+                    _menuCameraRot = Camera.main.transform.rotation;
+                    
+                    // CRITICAL: Disable CinemachineBrain to prevent it from overriding camera
+                    var brain = Camera.main.GetComponent<Unity.Cinemachine.CinemachineBrain>();
+                    if (brain != null)
+                        brain.enabled = false;
+                }
+                
                 _isVisible = true;
                 IsVisibleGlobally = true;
 
@@ -120,6 +136,12 @@ namespace FlippingIsHardTAS
             }
             
             if (!_isVisible) return;
+            
+            // Force camera position while menu is open (fixes coordinate jump bug)
+            if (Camera.main != null)
+            {
+                Camera.main.transform.SetPositionAndRotation(_menuCameraPos, _menuCameraRot);
+            }
 
             if (_macroStatusTimer > 0)
             {
@@ -398,6 +420,14 @@ namespace FlippingIsHardTAS
         {
             _isVisible = false;
             IsVisibleGlobally = false;
+            
+            // Re-enable CinemachineBrain
+            if (Camera.main != null)
+            {
+                var brain = Camera.main.GetComponent<Unity.Cinemachine.CinemachineBrain>();
+                if (brain != null)
+                    brain.enabled = true;
+            }
 
             EnableGameScripts();
 
