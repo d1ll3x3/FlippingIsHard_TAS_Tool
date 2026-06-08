@@ -94,7 +94,7 @@ namespace FlippingIsHardTAS
                         var firstTickState = _macroSystem.GetStateAtTick(startTick);
                         if (firstTickState.HasValue)
                         {
-                            TASPlugin.Logger.LogInfo($"[Import] Injecting axes from macro tick {startTick}: pan={firstTickState.Value.CameraPan} tilt={firstTickState.Value.CameraTilt}");
+                            TASPlugin.Logger.LogInfo($"[Import] Auto-playing from tick {startTick}");
                             InjectAxesFromState(firstTickState.Value);
                             ForceCinemachineUpdate();
                         }
@@ -203,7 +203,7 @@ namespace FlippingIsHardTAS
                 // Ensure we catch situations where _fishNetTimeManager was destroyed by a scene reload
                 if (_isInGame && _fishNetTimeManager != null && _fishNetTimeManager.gameObject == null)
                 {
-                    TASPlugin.Logger.LogInfo("TAS: TimeManager destroyed (QuickRestart detected in Update).");
+                    // Quick restart handled silently
                     ResetTrainer();
                     _fishNetTimeManager = null;
                 }
@@ -236,10 +236,6 @@ namespace FlippingIsHardTAS
                         Quaternion rot = _macroSystem.GetCurrentCameraRotation();
                         rot.Normalize();
                         Vector3 pos = _macroSystem.GetCurrentCameraPosition();
-                        
-                        // Only log if values changed significantly (avoid spam)
-                        if (Time.frameCount % 30 == 0)
-                            TASPlugin.Logger.LogInfo($"[UPDATE-PAUSED] Writing camera: tick={_timeController.CurrentTick} pos={pos} rot={rot}");
                         
                         Camera.main.transform.rotation = rot;
                         Camera.main.transform.position = pos;
@@ -531,7 +527,6 @@ namespace FlippingIsHardTAS
                     var firstTickState = _macroSystem.GetStateAtTick(startTick);
                     if (firstTickState.HasValue)
                     {
-                        TASPlugin.Logger.LogInfo($"[F10] Injecting axes from macro tick {startTick}: pan={firstTickState.Value.CameraPan} tilt={firstTickState.Value.CameraTilt}");
                         InjectAxesFromState(firstTickState.Value);
                         ForceCinemachineUpdate();
                     }
@@ -732,7 +727,7 @@ namespace FlippingIsHardTAS
                     }
                     else
                     {
-                        TASPlugin.Logger.LogWarning("[InjectAxes] No orbital or PanTilt component found!");
+                        TASPlugin.Logger.LogError($"[InjectAxes] No orbital or PanTilt component found!");
                     }
                 }
             }
@@ -758,16 +753,9 @@ namespace FlippingIsHardTAS
                 if (_cachedRb == null) return;
                 
                 ulong targetTick = _timeController.CurrentTick - 1;
-                TASPlugin.Logger.LogInfo($"[REWIND] Going from tick {_timeController.CurrentTick} to {targetTick}");
                 
                 var state = _macroSystem.GetStateAtTick(targetTick);
-                if (state == null)
-                {
-                    TASPlugin.Logger.LogWarning($"[REWIND] No data at tick {targetTick}!");
-                    return;
-                }
-                
-                TASPlugin.Logger.LogInfo($"[REWIND] Found data: CamPos={state.Value.CameraPosition} CamRot={state.Value.CameraRotation}");
+                if (state == null) return;
                 
                 // Apply physics state
                 _cachedRb.position = state.Value.PlayerPosition;
@@ -790,7 +778,6 @@ namespace FlippingIsHardTAS
                     Quaternion camRot = state.Value.CameraRotation;
                     camRot.Normalize();
                     Camera.main.transform.rotation = camRot;
-                    TASPlugin.Logger.LogInfo($"[REWIND] Camera set to: pos={Camera.main.transform.position} rot={Camera.main.transform.rotation}");
                 }
                 
                 // Reset Cinemachine damping so camera snaps instantly to rewound position
@@ -1015,7 +1002,6 @@ namespace FlippingIsHardTAS
             {
                 // Lock physics accumulator to prevent frame drop variations
                 Time.maximumDeltaTime = Time.fixedDeltaTime;
-                TASPlugin.Logger.LogInfo($"Set maximumDeltaTime to {Time.maximumDeltaTime}");
                 
                 // Note: We reverted the InputSystem updateMode override because forcing it
                 // to ProcessEventsInFixedUpdate breaks mouse sensitivity accumulation and UI events (like ESC).
@@ -1055,18 +1041,9 @@ namespace FlippingIsHardTAS
                     // Hook AFTER full tick (after Reconcile): fallback to correct position if it drifted
                     _postTickDelegate = (Il2CppSystem.Action)(() => OnPostTick());
                     timeManager.OnPostTick += _postTickDelegate;
-
-                    TASPlugin.Logger.LogInfo("Subscribed to FishNet TimeManager pre/post hooks");
-                }
-                else
-                {
-                    TASPlugin.Logger.LogWarning("FishNet TimeManager not found — velocity injection will use FixedUpdate fallback");
                 }
             }
-            catch (Exception ex)
-            {
-                TASPlugin.Logger.LogWarning($"Could not subscribe to FishNet TimeManager (game may not be in network session yet): {ex.Message}");
-            }
+            catch { }
         }
         
         private void UnsubscribeFromFishNet()
@@ -1080,8 +1057,6 @@ namespace FlippingIsHardTAS
                     
                     if (_postTickDelegate != null)
                         try { _fishNetTimeManager.OnPostTick -= _postTickDelegate; } catch { }
-                        
-                    TASPlugin.Logger.LogInfo("Unsubscribed from FishNet TimeManager");
                 }
             }
             catch { }

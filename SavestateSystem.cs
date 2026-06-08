@@ -90,53 +90,23 @@ namespace FlippingIsHardTAS
                         var cinCam = movement.camManager.MainCinemachineCamera;
                         if (cinCam != null)
                         {
-                            // Log ALL components using Il2Cpp type names for accuracy
-                            var comps = cinCam.GetComponents<Component>();
-                            var compNames = new System.Text.StringBuilder();
-                            foreach (var c in comps)
-                            {
-                                if (c != null) 
-                                {
-                                    compNames.Append(c.GetType().FullName + " | ");
-                                }
-                            }
-                            TASPlugin.Logger.LogInfo($"[SaveState] CinemachineCamera '{cinCam.name}' components: {compNames}");
-
                             var panTilt = cinCam.GetComponent<Unity.Cinemachine.CinemachinePanTilt>();
-                            var pov = cinCam.GetComponent<Unity.Cinemachine.CinemachinePOV>();
                             var orbital = cinCam.GetComponent<Unity.Cinemachine.CinemachineOrbitalFollow>();
 
                             if (panTilt != null)
                             {
                                 pan = panTilt.PanAxis.Value;
                                 tilt = panTilt.TiltAxis.Value;
-                                TASPlugin.Logger.LogInfo($"[SaveState] PanTilt FOUND: pan={pan} tilt={tilt}");
-                            }
-                            else if (pov != null)
-                            {
-                                TASPlugin.Logger.LogInfo($"[SaveState] POV FOUND");
                             }
                             else if (orbital != null)
                             {
                                 pan = orbital.HorizontalAxis.Value;
                                 tilt = orbital.VerticalAxis.Value;
-                                TASPlugin.Logger.LogInfo($"[SaveState] OrbitalFollow: pan(HorizontalAxis)={pan} tilt(VerticalAxis)={tilt}");
-                            }
-                            else
-                            {
-                                TASPlugin.Logger.LogWarning("[SaveState] No known rotation component (PanTilt/POV/Orbital) found on cinCam!");
                             }
                         }
-                        else
-                        {
-                            TASPlugin.Logger.LogWarning("[SaveState] MainCinemachineCamera is null!");
-                        }
-                    }
-                    else
-                    {
-                        TASPlugin.Logger.LogWarning($"[SaveState] movement={movement != null} camManager={(movement != null ? movement.camManager != null : false)}");
-                    }
 
+                    }
+                    
                     var state = new SaveStateData(pos, rot, vel, angVel, camRot, camPos, pan, tilt);
 
                     if (isMacroSlot)
@@ -184,8 +154,6 @@ namespace FlippingIsHardTAS
                         playerTransform.position = state.PlayerPosition;
                         playerTransform.rotation = state.PlayerRotation;
                         Physics.SyncTransforms();
-                        
-                        TASPlugin.Logger.LogInfo($"[Savestate] Restored: pos={state.PlayerPosition} vel={state.PlayerVelocity} pan={state.CameraPan} tilt={state.CameraTilt}");
                     }
                     else
                     {
