@@ -13,6 +13,8 @@ A **BepInEx** mod for *Flipping is Hard (Demo)* that adds full TAS (Tool-Assiste
 | 💾 **Savestates** | Save and load player position / velocity at any moment |
 | ✂️ **Edit Mode** | Cut a replay at any tick (F8) and re-record from there — keeps everything before the cut |
 | ⏪ **Rewind** | Go back 1 tick during paused replay (`,`) — hold for 10/sec |
+| ⏩ **Fast Forward ×3** | Toggle 3× speed during replay to quickly reach edit points |
+| 🔄 **Reset Tick** | Reset tick counter to 0 (F5) |
 | 📁 **Macro Export & Import** | Save your recorded TAS runs to disk (`.tas` files) and load them later |
 | 🔄 **Quick Restart Hook** | Full compatibility with the game's Quick Restart. Auto-pauses at tick 0 |
 | ⏸ **Pause / Frame Advance** | Pause time and step exactly 1 physics tick per press; hold for 10 ticks/sec |
@@ -56,6 +58,8 @@ Flipping is Hard Demo/BepInEx/
 | Pause / Resume | `F11` |
 | Frame Advance | `.` (hold = 10/s) |
 | Rewind Tick | `,` (hold = 10/s) |
+| Reset Tick | `F5` |
+| Fast Forward ×3 | `F6` |
 | Slow Motion (×0.1) | `F12` |
 | Slow-Mo Boost (×0.3) | `E` (hold while slow-mo active) |
 | Open Settings | `B` |
