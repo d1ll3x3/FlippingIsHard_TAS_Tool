@@ -663,14 +663,6 @@ namespace FlippingIsHardTAS
                 var state = _macroSystem.GetStateAtTick(targetTick);
                 if (state == null) return;
                 
-                // Temporarily disable collider to prevent wall collision from resetting jump
-                Collider playerCollider = null;
-                if (_cachedRb != null)
-                {
-                    playerCollider = _cachedRb.GetComponent<Collider>();
-                    if (playerCollider != null) playerCollider.enabled = false;
-                }
-                
                 _cachedRb.position = state.Value.PlayerPosition;
                 _cachedRb.rotation = state.Value.PlayerRotation;
                 _cachedRb.linearVelocity = state.Value.PlayerVelocity;
@@ -683,9 +675,6 @@ namespace FlippingIsHardTAS
                     playerTransform.rotation = state.Value.PlayerRotation;
                 }
                 Physics.SyncTransforms();
-                
-                // Re-enable collider after position is synced
-                if (playerCollider != null) playerCollider.enabled = true;
                 
                 if (Camera.main != null)
                 {
