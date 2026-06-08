@@ -79,6 +79,19 @@ namespace FlippingIsHardTAS
 
                 DisableGameScripts();
 
+                // Block game input while menu is open (unless game is ended)
+                bool gameEnded = false;
+                try { gameEnded = EHS.GameManager.IsGameEnded; } catch { }
+                if (!gameEnded)
+                {
+                    try {
+                        if (UnityEngine.InputSystem.Keyboard.current != null)
+                            UnityEngine.InputSystem.InputSystem.DisableDevice(UnityEngine.InputSystem.Keyboard.current);
+                        if (UnityEngine.InputSystem.Mouse.current != null)
+                            UnityEngine.InputSystem.InputSystem.DisableDevice(UnityEngine.InputSystem.Mouse.current);
+                    } catch { }
+                }
+
                 // Clone all settings into temp copy
                 _tempSettings = CloneSettings(TASConfig.Settings);
                 _listeningAction = null;
@@ -100,6 +113,7 @@ namespace FlippingIsHardTAS
             FrameAdvance  = src.FrameAdvance.Clone(),
             ResetTick     = src.ResetTick.Clone(),
             FastForward   = src.FastForward.Clone(),
+            OverlayScale  = src.OverlayScale,
         };
 
         private void InitStyles()
@@ -258,6 +272,21 @@ namespace FlippingIsHardTAS
             // ── Section: UI ──────────────────────────────────────────
             DrawSectionLabel(cx, ref cy, "INTERFACE");
             DrawBindRow(cx, ref cy, "Open Settings",  "Menu", _tempSettings.OpenBindMenu);
+            
+            // Overlay scale: use +/- buttons instead of slider for compatibility
+            GUI.color = Color.white;
+            GUI.Label(new Rect(cx, cy, 100, 20), "HUD Scale:");
+            float scl = _tempSettings.OverlayScale;
+            GUI.backgroundColor = new Color(0.4f, 0.4f, 0.4f, 1f);
+            if (CustomButton(new Rect(cx + 100, cy, 30, 20), "-"))
+                scl = Mathf.Max(0.25f, scl - 0.05f);
+            GUI.Label(new Rect(cx + 135, cy, 50, 20), $"{scl:F2}x");
+            if (CustomButton(new Rect(cx + 175, cy, 30, 20), "+"))
+                scl = Mathf.Min(2.0f, scl + 0.05f);
+            _tempSettings.OverlayScale = Mathf.Round(scl * 100f) / 100f;
+            GUI.backgroundColor = _defaultBgColor;
+            cy += 26;
+            GUI.color = Color.white;
 
             // ── Section: Macros ──────────────────────────────────────
             DrawSectionLabel(cx, ref cy, "MACRO FILES");
@@ -435,6 +464,19 @@ namespace FlippingIsHardTAS
             }
 
             EnableGameScripts();
+
+            // Re-enable input devices (unless game is ended)
+            bool gameEnded2 = false;
+            try { gameEnded2 = EHS.GameManager.IsGameEnded; } catch { }
+            if (!gameEnded2)
+            {
+                try {
+                    if (UnityEngine.InputSystem.Keyboard.current != null)
+                        UnityEngine.InputSystem.InputSystem.EnableDevice(UnityEngine.InputSystem.Keyboard.current);
+                    if (UnityEngine.InputSystem.Mouse.current != null)
+                        UnityEngine.InputSystem.InputSystem.EnableDevice(UnityEngine.InputSystem.Mouse.current);
+                } catch { }
+            }
 
             // Only re-lock cursor if game is still running (not at end screen)
             bool gameEnded = false;
