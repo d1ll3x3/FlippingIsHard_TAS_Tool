@@ -8,7 +8,9 @@ namespace FlippingIsHardTAS
     public class TASBindMenuRenderer
     {
         private GameObjectFinder _gameObjectFinder;
-        private List<MonoBehaviour> _disabledScripts = new List<MonoBehaviour>();
+        
+        // Only store camera-related components to restore later
+        private List<MonoBehaviour> _disabledCameraScripts = new List<MonoBehaviour>();
         
         // Camera state backup for menu (fixes coordinate bug)
         private Vector3 _menuCameraPos;
@@ -76,13 +78,6 @@ namespace FlippingIsHardTAS
                 IsVisibleGlobally = true;
 
                 DisableGameScripts();
-
-                try {
-                    if (UnityEngine.InputSystem.Keyboard.current != null)
-                        UnityEngine.InputSystem.InputSystem.DisableDevice(UnityEngine.InputSystem.Keyboard.current);
-                    if (UnityEngine.InputSystem.Mouse.current != null)
-                        UnityEngine.InputSystem.InputSystem.DisableDevice(UnityEngine.InputSystem.Mouse.current);
-                } catch { }
 
                 // Clone all settings into temp copy
                 _tempSettings = CloneSettings(TASConfig.Settings);
@@ -427,85 +422,66 @@ namespace FlippingIsHardTAS
             _isVisible = false;
             IsVisibleGlobally = false;
             
-            // Re-enable CinemachineBrain
+            // Re-enable Cinemachine
             if (Camera.main != null)
             {
                 var brain = Camera.main.GetComponent<Unity.Cinemachine.CinemachineBrain>();
                 if (brain != null)
                     brain.enabled = true;
+                
+                var axisCtrl = Camera.main.GetComponent<Unity.Cinemachine.CinemachineInputAxisController>();
+                if (axisCtrl != null)
+                    axisCtrl.enabled = true;
             }
 
             EnableGameScripts();
 
-            try {
-                if (UnityEngine.InputSystem.Keyboard.current != null)
-                    UnityEngine.InputSystem.InputSystem.EnableDevice(UnityEngine.InputSystem.Keyboard.current);
-                if (UnityEngine.InputSystem.Mouse.current != null)
-                    UnityEngine.InputSystem.InputSystem.EnableDevice(UnityEngine.InputSystem.Mouse.current);
-            } catch { }
-
-            Cursor.lockState = CursorLockMode.Locked;
-            Cursor.visible = false;
-
+            // Only re-lock cursor if game is still running (not at end screen)
+            bool gameEnded = false;
+            try { gameEnded = EHS.GameManager.IsGameEnded; } catch { }
+            if (!gameEnded)
+            {
+                Cursor.lockState = CursorLockMode.Locked;
+                Cursor.visible = false;
+            }
+            
             OnMenuClosed?.Invoke();
         }
-
+        
         private void DisableGameScripts()
         {
-            _disabledScripts.Clear();
-
-            var allMonos = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
-            foreach (var comp in allMonos)
+            _disabledCameraScripts.Clear();
+            
+            // Only disable cinematic camera controllers (minimal intervention)
+            if (Camera.main != null)
             {
-                if (comp == null || !comp.enabled) continue;
-
-                string ns = comp.GetType().Namespace ?? "";
-                string name = comp.GetType().Name.ToLower();
-
-                if (ns.StartsWith("UnityEngine.InputSystem") ||
-                    name.Contains("input") ||
-                    name.Contains("pause") ||
-                    name.Contains("camera") ||
-                    name.Contains("look"))
+                var brain = Camera.main.GetComponent<Unity.Cinemachine.CinemachineBrain>();
+                if (brain != null && brain.enabled)
                 {
-                    if (ns != "FlippingIsHardTAS")
-                    {
-                        comp.enabled = false;
-                        _disabledScripts.Add(comp);
-                    }
+                    brain.enabled = false;
+                    // already handled in ToggleVisibility
+                }
+                
+                var axisCtrl = Camera.main.GetComponent<Unity.Cinemachine.CinemachineInputAxisController>();
+                if (axisCtrl != null && axisCtrl.enabled)
+                {
+                    axisCtrl.enabled = false;
+                    _disabledCameraScripts.Add(axisCtrl);
                 }
             }
-
+            
+            // Also disable input related objects that could interfere with menu navigation
             var player = _gameObjectFinder.FindPlayerTransform();
             if (player != null)
             {
-                foreach (var comp in player.GetComponents<MonoBehaviour>())
+                var inputHandler = player.GetComponent<EHS.PlayerInputHandler>();
+                if (inputHandler != null)
                 {
-                    if (comp != null && comp.enabled && !(comp.GetType().Namespace ?? "").StartsWith("UnityEngine"))
+                    var movement = player.GetComponent<EHS.PlayerMovement>();
+                    if (movement != null && movement.enabled)
                     {
-                        if ((comp.GetType().Namespace ?? "") != "FlippingIsHardTAS")
-                        {
-                            comp.enabled = false;
-                            if (!_disabledScripts.Contains(comp))
-                                _disabledScripts.Add(comp);
-                        }
-                    }
-                }
-            }
-
-            var camera = _gameObjectFinder.FindCameraTransform();
-            if (camera != null)
-            {
-                foreach (var comp in camera.GetComponents<MonoBehaviour>())
-                {
-                    if (comp != null && comp.enabled && !(comp.GetType().Namespace ?? "").StartsWith("UnityEngine"))
-                    {
-                        if ((comp.GetType().Namespace ?? "") != "FlippingIsHardTAS")
-                        {
-                            comp.enabled = false;
-                            if (!_disabledScripts.Contains(comp))
-                                _disabledScripts.Add(comp);
-                        }
+                        movement.enabled = false;
+                        _disabledCameraScripts.Add(movement);
                     }
                 }
             }
@@ -513,11 +489,11 @@ namespace FlippingIsHardTAS
 
         private void EnableGameScripts()
         {
-            foreach (var comp in _disabledScripts)
+            foreach (var comp in _disabledCameraScripts)
             {
                 if (comp != null) comp.enabled = true;
             }
-            _disabledScripts.Clear();
+            _disabledCameraScripts.Clear();
         }
 
         // Overload without extra dummy parameter (leftover from refactor)

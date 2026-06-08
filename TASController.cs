@@ -132,6 +132,7 @@ namespace FlippingIsHardTAS
                         _savestateSystem?.Clear();
                         _gameObjectFinder?.ClearCache();
                         _cachedRb = null;
+                        _wasGameEnded = false;
                         ApplyDeterministicSettings();
                     }
                 }
@@ -156,6 +157,9 @@ namespace FlippingIsHardTAS
 
                 HandleHotkeys();
 
+                // Auto-stop recording/playback when game ends
+                CheckGameEnd();
+                
                 if (_macroSystem != null && _macroSystem.IsPlaying && Camera.main != null)
                 {
                     if (_timeController.IsPaused)
@@ -297,6 +301,7 @@ namespace FlippingIsHardTAS
             _gameObjectFinder?.ClearCache();
             _cachedRb = null;
             _fishNetTimeManager = null;
+            _wasGameEnded = false;
             ApplyDeterministicSettings();
             if (_timeController != null && !_timeController.IsPaused)
                 _timeController.TogglePause();
@@ -334,6 +339,34 @@ namespace FlippingIsHardTAS
             {
                 TASPlugin.Logger.LogError($"Error in TASController.OnGUI: {ex}");
             }
+        }
+        
+        private bool _wasGameEnded = false;
+        
+        private void CheckGameEnd()
+        {
+            try
+            {
+                bool isGameEnded = EHS.GameManager.IsGameEnded;
+                
+                if (isGameEnded && !_wasGameEnded)
+                {
+                    _wasGameEnded = true;
+                    bool wasRecording = _macroSystem.IsRecording;
+                    
+                    if (_macroSystem.IsPlaying)
+                        StopPlayback();
+                    if (_macroSystem.IsRecording)
+                        _macroSystem.StopRecording();
+                    
+                    if (wasRecording)
+                    {
+                        TASPlugin.Logger.LogInfo("TAS: Game ended — recording stopped.");
+                        _bindMenu.ToggleVisibility(); // open menu for export
+                    }
+                }
+            }
+            catch { }
         }
         
         private void HandleHotkeys()
