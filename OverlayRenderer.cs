@@ -13,6 +13,7 @@ namespace FlippingIsHardTAS
         private bool _isSlowMo = false;
         private bool _isSlowMoBoost = false;
         private bool _isEditMode = false;
+        private bool _isFastForward = false;
         private ulong _currentTick = 0;
         private bool _showOverlay = true;
 
@@ -50,7 +51,7 @@ namespace FlippingIsHardTAS
 
         public void UpdateData(Vector3 pos, float speed, bool hasSaved, bool isRecording,
                                bool isPlaying, bool isPaused, ulong currentTick,
-                               bool isSlowMo = false, bool isSlowMoBoost = false, bool isEditMode = false)
+                               bool isSlowMo = false, bool isSlowMoBoost = false, bool isFastForward = false, bool isEditMode = false)
         {
             if (_cachedCoords == null || Vector3.Distance(_currentPosition, pos) > 0.05f)
             {
@@ -73,6 +74,7 @@ namespace FlippingIsHardTAS
             _isSlowMo         = isSlowMo;
             _isSlowMoBoost    = isSlowMoBoost;
             _isEditMode       = isEditMode;
+            _isFastForward    = isFastForward;
             _currentTick      = currentTick;
             _showOverlay      = Application.isFocused;
         }
@@ -135,7 +137,7 @@ namespace FlippingIsHardTAS
             float sectionH = 20f;
             float totalH = 35  // header + tick + state
                          + sectionH + lineH * 2  // savestate section
-                         + sectionH + lineH * 4  // macro section (Record, Play, Reset, Edit)
+                         + sectionH + lineH * 5  // macro section (Record, Play, Reset, FF, Edit)
                          + sectionH + lineH * 4  // playback section (Pause, FrameAdv, Rewind, SlowMo)
                          + sectionH + lineH       // ui section
                          + 14;                    // padding
@@ -179,6 +181,10 @@ namespace FlippingIsHardTAS
             {
                 stateStr = "▶ REPLAY ×0.1"; stateColor = _playColor;
             }
+            else if (_isPlaying && _isFastForward)
+            {
+                stateStr = "⏩ REPLAY ×3"; stateColor = new Color(0.2f, 0.8f, 1f, 1f);
+            }
             else if (_isPlaying)
             {
                 stateStr = "▶ REPLAY"; stateColor = _playColor;
@@ -218,6 +224,7 @@ namespace FlippingIsHardTAS
                 $"[{s.PlayMacro}] Play / Stop",
                 _isRecording ? _recColor : (_isPlaying ? _playColor : Color.white));
             DrawKeySingle(cx, ref cy, $"[{s.ResetTick}] Reset Tick", _dimColor);
+            DrawKeySingle(cx, ref cy, $"[{s.FastForward}] Fast Forward ×3", _isFastForward ? new Color(0.2f, 0.8f, 1f) : _dimColor);
             DrawKeySingle(cx, ref cy, $"[{s.EditMacro}] Edit Macro", _isEditMode ? new Color(1f, 0.5f, 0f) : _dimColor);
 
             // ── Playback Controls ────────────────────────────────────────

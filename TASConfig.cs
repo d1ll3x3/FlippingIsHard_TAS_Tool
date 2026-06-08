@@ -91,6 +91,7 @@ namespace FlippingIsHardTAS
         public KeyBind SlowMoBoost    { get; set; } = new KeyBind(KeyCode.E);
         public KeyBind FrameAdvance   { get; set; } = new KeyBind(KeyCode.Period);
         public KeyBind ResetTick      { get; set; } = new KeyBind(KeyCode.F5);
+        public KeyBind FastForward    { get; set; } = new KeyBind(KeyCode.F6);
     }
 
     public static class TASConfig

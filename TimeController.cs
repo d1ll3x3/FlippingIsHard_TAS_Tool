@@ -5,9 +5,10 @@ namespace FlippingIsHardTAS
 {
     public class TimeController
     {
-        public bool IsPaused     { get; private set; } = false;
-        public bool IsSlowMo     { get; private set; } = false;
-        public bool IsSlowMoBoost{ get; private set; } = false;
+        public bool IsPaused      { get; private set; } = false;
+        public bool IsSlowMo      { get; private set; } = false;
+        public bool IsSlowMoBoost { get; private set; } = false;
+        public bool IsFastForward { get; private set; } = false;
 
         private int   _framesToAdvance = 0;
         private float _lastAdvanceTime = -1f;
@@ -15,6 +16,7 @@ namespace FlippingIsHardTAS
         // Slow-motion speeds
         private const float SlowMoNormal = 0.1f;  // ×0.1
         private const float SlowMoFast   = 0.3f;  // ×0.3  (boost)
+        private const float FastForwardScale = 3f;  // ×3
 
         // Frame-advance hold timing
         private const float AdvanceHoldDelay    = 0.4f;   // seconds before hold-repeat starts
@@ -31,6 +33,7 @@ namespace FlippingIsHardTAS
             IsPaused          = false;
             IsSlowMo          = false;
             IsSlowMoBoost     = false;
+            IsFastForward     = false;
             ApplyTimeScale();
         }
 
@@ -96,7 +99,12 @@ namespace FlippingIsHardTAS
             ApplyTimeScale();
         }
 
-        // ── Time Scale ────────────────────────────────────────────────────
+        public void ToggleFastForward()
+        {
+            IsFastForward = !IsFastForward;
+            ApplyTimeScale();
+        }
+
         private void ApplyTimeScale()
         {
             if (_framesToAdvance > 0)
@@ -105,6 +113,8 @@ namespace FlippingIsHardTAS
                 Time.timeScale = 0f;
             else if (IsSlowMo)
                 Time.timeScale = IsSlowMoBoost ? SlowMoFast : SlowMoNormal;
+            else if (IsFastForward)
+                Time.timeScale = FastForwardScale;
             else
                 Time.timeScale = 1f;
         }

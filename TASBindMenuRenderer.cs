@@ -17,7 +17,7 @@ namespace FlippingIsHardTAS
         private bool _isVisible = false;
         private bool _pendingClose = false;
         // Taller window to fit all 8 binds and the new Macro section
-        private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 325, 520, 650);
+        private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 345, 520, 670);
 
         private GUIStyle _titleStyle;
         private GUIStyle _sectionStyle;
@@ -104,6 +104,7 @@ namespace FlippingIsHardTAS
             SlowMoBoost   = src.SlowMoBoost.Clone(),
             FrameAdvance  = src.FrameAdvance.Clone(),
             ResetTick     = src.ResetTick.Clone(),
+            FastForward   = src.FastForward.Clone(),
         };
 
         private void InitStyles()
@@ -223,6 +224,7 @@ namespace FlippingIsHardTAS
                 case "SlowMoBoost":  _tempSettings.SlowMoBoost  = new KeyBind(main, mod); break;
                 case "FrameAdvance": _tempSettings.FrameAdvance = new KeyBind(main, mod); break;
                 case "ResetTick":    _tempSettings.ResetTick    = new KeyBind(main, mod); break;
+                case "FastForward":  _tempSettings.FastForward  = new KeyBind(main, mod); break;
             }
         }
 
@@ -247,6 +249,7 @@ namespace FlippingIsHardTAS
             DrawBindRow(cx, ref cy, "Record Macro",   "Record",  _tempSettings.RecordMacro);
             DrawBindRow(cx, ref cy, "Play Macro",     "Play",    _tempSettings.PlayMacro);
             DrawBindRow(cx, ref cy, "Reset Tick",           "ResetTick",    _tempSettings.ResetTick);
+            DrawBindRow(cx, ref cy, "Fast Forward ×3",     "FastForward",  _tempSettings.FastForward);
             DrawBindRow(cx, ref cy, "Edit Macro",     "EditMacro", _tempSettings.EditMacro);
 
             // ── Section: Playback Controls ────────────────────────────────

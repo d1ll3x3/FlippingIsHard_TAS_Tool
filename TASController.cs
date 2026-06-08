@@ -24,6 +24,7 @@ namespace FlippingIsHardTAS
         private bool _wasEditModePressed = false;
         private bool _wasRewindPressed = false;
         private bool _wasResetTickPressed = false;
+        private bool _wasFastForwardPressed = false;
         private float _lastRewindTime = 0f;
 
         // Component references
@@ -492,6 +493,12 @@ namespace FlippingIsHardTAS
                     _macroSystem.RecordedInputs.Clear();
             }
             _wasResetTickPressed = isResetTickPressed;
+            
+            // Fast Forward (F6) — ×3 speed
+            bool isFastForwardPressed = TASConfig.Settings.FastForward.IsPressed();
+            if (isFastForwardPressed && !_wasFastForwardPressed)
+                _timeController.ToggleFastForward();
+            _wasFastForwardPressed = isFastForwardPressed;
         }
         
         private void StartPlaybackWithAxes(ulong startTick)
@@ -778,6 +785,7 @@ namespace FlippingIsHardTAS
                 _timeController.CurrentTick,
                 _timeController.IsSlowMo,
                 _timeController.IsSlowMoBoost,
+                _timeController.IsFastForward,
                 _macroSystem.IsEditMode
             );
         }
