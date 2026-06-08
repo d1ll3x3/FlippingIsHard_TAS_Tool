@@ -607,7 +607,8 @@ namespace FlippingIsHardTAS
         private void RewindRecording(ulong targetTick)
         {
             RewindToTick(targetTick);
-            _macroSystem.SetRewindCutPoint(targetTick);
+            // Immediately truncate data from targetTick+1 onward (same as EnterEditMode)
+            _macroSystem.TruncateAt(targetTick + 1);
         }
         
         /// <summary>

@@ -11,10 +11,6 @@ namespace FlippingIsHardTAS
         public int RNGSeed { get; set; }
         public ulong MaxTick { get; set; }
         
-        // Rewind cut point: when recording reaches a tick > this, data from that tick onward is truncated.
-        // 0 = no pending truncation.
-        private ulong _rewindCutPoint = 0;
-        
         public Dictionary<ulong, TASInputState> RecordedInputs = new Dictionary<ulong, TASInputState>();
 
         public void ExportMacro(string path)
@@ -34,7 +30,6 @@ namespace FlippingIsHardTAS
         {
             IsRecording = false;
             IsEditMode = false;
-            _rewindCutPoint = 0;
             RecordedInputs.Clear();
             _currentPlaybackState = default;
             _previousPlaybackState = default;
@@ -143,25 +138,9 @@ namespace FlippingIsHardTAS
         public bool HasRecordedData => RecordedInputs.Count > 0;
         
         /// <summary>
-        /// Marks a rewind cut point. When recording reaches a tick > this,
-        /// data from that tick onward is truncated before recording the new input.
-        /// </summary>
-        public void SetRewindCutPoint(ulong tick)
-        {
-            _rewindCutPoint = tick;
-        }
-        
-        /// <summary>
-        /// Whether a rewind cut point is pending (Recording will truncate on next real-time tick).
-        /// </summary>
-        public bool HasPendingRewind => _rewindCutPoint > 0;
-        
-        /// <summary>
-        /// Truncates all recorded data from this tick onward. Call when real-time recording resumes after rewind.
-        /// </summary>
+        /// Truncates all recorded data from this tick onward.
         public void TruncateAt(ulong tick)
         {
-            if (_rewindCutPoint == 0) return;
             var keysToRemove = new List<ulong>();
             foreach (var kvp in RecordedInputs)
             {
@@ -170,41 +149,13 @@ namespace FlippingIsHardTAS
             }
             foreach (var key in keysToRemove)
                 RecordedInputs.Remove(key);
-            _rewindCutPoint = 0;
         }
         
         public void RecordTick(ulong currentTick, TASInputState state)
         {
             if (!IsRecording) return;
-            
-            if (_rewindCutPoint > 0 && currentTick > _rewindCutPoint)
-            {
-                bool hasInput = HasAnyInput(state);
-                if (hasInput)
-                {
-                    var keysToRemove = new List<ulong>();
-                    foreach (var kvp in RecordedInputs)
-                    {
-                        if (kvp.Key >= currentTick)
-                            keysToRemove.Add(kvp.Key);
-                    }
-                    foreach (var key in keysToRemove)
-                        RecordedInputs.Remove(key);
-                    _rewindCutPoint = 0;
-                }
-            }
-            
-            // Don't overwrite old data during frame-advance after rewind
-            if (_rewindCutPoint > 0 && currentTick > _rewindCutPoint && !HasAnyInput(state))
-                return;
-            
             RecordedInputs[currentTick] = state;
             if (currentTick > MaxTick) MaxTick = currentTick;
-        }
-        
-        private static bool HasAnyInput(TASInputState state)
-        {
-            return state.Move != Vector2.zero || state.Look != Vector2.zero || state.Jump || state.Interact;
         }
         
         public void PlaybackTick(ulong currentTick)
