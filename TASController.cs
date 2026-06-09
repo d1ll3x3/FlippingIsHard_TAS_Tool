@@ -430,7 +430,7 @@ namespace FlippingIsHardTAS
                 {
                     StopPlayback();
                 }
-                else if (_macroSystem.HasRecordedData)
+                else if (_macroSystem.HasRecordedData && !_macroSystem.IsRecording && !_macroSystem.IsEditMode)
                 {
                     _savestateSystem.LoadState(_gameObjectFinder, _timeController, true);
                     Physics.SyncTransforms();

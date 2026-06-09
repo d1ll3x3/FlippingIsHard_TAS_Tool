@@ -227,8 +227,10 @@ namespace FlippingIsHardTAS
 
             // ── Macro ──
             DrawSectionLabel(cx, ref cy, "MACRO", ctrlW, lineH);
-            DrawKeyRow(cx, ref cy, $"[{s.RecordMacro}] Record", $"[{s.PlayMacro}] Play / Stop",
-                _isRecording ? _recColor : (_isPlaying ? _playColor : Color.white), ctrlW, lineH);
+            DrawKeySingle(cx, ref cy, $"[{s.RecordMacro}] Record",
+                _isRecording ? _recColor : _dimColor, ctrlW, lineH);
+            DrawKeySingle(cx, ref cy, $"[{s.PlayMacro}] Play / Stop",
+                _isEditMode || _isRecording ? new Color(0.6f, 0.2f, 0.2f) : (_isPlaying ? _playColor : _dimColor), ctrlW, lineH);
             DrawKeySingle(cx, ref cy, $"[{s.ResetTick}] Reset Tick", _dimColor, ctrlW, lineH);
             DrawKeySingle(cx, ref cy, $"[{s.FastForward}] Fast Forward ×3",
                 _isFastForward ? new Color(0.2f, 0.8f, 1f) : _dimColor, ctrlW, lineH);
