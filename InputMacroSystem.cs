@@ -137,16 +137,6 @@ namespace FlippingIsHardTAS
             EnableInputSystemDevices();
         }
         
-        /// <summary>
-        /// Re-enables input devices during resimulation. The game's input pipeline may
-        /// need live devices to process ticks; recorded inputs are still injected into
-        /// rawData every tick, overriding whatever the real devices produce.
-        /// </summary>
-        public void EnableDevicesForResim()
-        {
-            EnableInputSystemDevices();
-        }
-
         private void DisableInputSystemDevices()
         {
             try
@@ -254,6 +244,9 @@ namespace FlippingIsHardTAS
             state.Interact = interact;
             state.CameraPan = camPan;
             state.CameraTilt = camTilt;
+            // An edited input has no captured rawData bytes — the quantized float IS its definition.
+            state.MoveXRaw = TASInputState.QuantizeAxis(move.x);
+            state.MoveYRaw = TASInputState.QuantizeAxis(move.y);
             RecordedInputs[tick] = state;
 
             if (GreenzoneEnd > tick) GreenzoneEnd = tick;
@@ -312,6 +305,17 @@ namespace FlippingIsHardTAS
         public Vector2 GetCurrentLookInput()
         {
             return _currentPlaybackState.Look;
+        }
+
+        /// <summary>Exact rawData sbytes captured at record time (bit-identical injection).</summary>
+        public (sbyte x, sbyte y) GetCurrentMoveRaw()
+        {
+            return (_currentPlaybackState.MoveXRaw, _currentPlaybackState.MoveYRaw);
+        }
+
+        public (sbyte x, sbyte y) GetCurrentLookRaw()
+        {
+            return (_currentPlaybackState.LookXRaw, _currentPlaybackState.LookYRaw);
         }
 
         public Quaternion GetCurrentCameraRotation()

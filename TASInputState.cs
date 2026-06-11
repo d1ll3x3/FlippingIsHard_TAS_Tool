@@ -22,6 +22,19 @@ namespace FlippingIsHardTAS
         public float CameraPan;
         public float CameraTilt;
 
+        // Exact rawData sbytes the game consumed this tick. Re-injecting these bit-identical
+        // values during robot resim avoids the float→sbyte round-trip quantization error
+        // that made resims diverge from the original run within a few ticks.
+        public sbyte MoveXRaw;
+        public sbyte MoveYRaw;
+        public sbyte LookXRaw;
+        public sbyte LookYRaw;
+
+        // Single quantization formula for edited inputs and legacy (pre-TAS4) files,
+        // which only stored the float values.
+        public static sbyte QuantizeAxis(float v)
+            => (sbyte)Mathf.RoundToInt(Mathf.Clamp(v, -1f, 1f) * 127f);
+
         public TASInputState(Vector2 move, Vector2 look, Quaternion camRot, Vector3 camPos,
                              bool jump, bool interact,
                              Vector3 playerPos, Quaternion playerRot,
@@ -40,6 +53,12 @@ namespace FlippingIsHardTAS
             PlayerAngularVelocity = playerAngVel;
             CameraPan = camPan;
             CameraTilt = camTilt;
+            // Raw bytes default to the quantized floats; the recorder overwrites them
+            // with the exact rawData values right after construction.
+            MoveXRaw = QuantizeAxis(move.x);
+            MoveYRaw = QuantizeAxis(move.y);
+            LookXRaw = QuantizeAxis(look.x);
+            LookYRaw = QuantizeAxis(look.y);
         }
     }
 }

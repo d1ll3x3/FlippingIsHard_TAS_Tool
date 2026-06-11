@@ -6,8 +6,10 @@ namespace FlippingIsHardTAS
 {
     public static class TASMacroSerializer
     {
-        private const string MAGIC_HEADER = "TAS3";
-        private const string LEGACY_HEADER = "TAS2";
+        // TAS4 adds the exact rawData sbytes per tick (bit-identical resim injection).
+        private const string MAGIC_HEADER = "TAS4";
+        private const string HEADER_TAS3 = "TAS3";
+        private const string HEADER_TAS2 = "TAS2";
 
         public static void ExportToFile(InputMacroSystem sys, string filePath)
         {
@@ -51,6 +53,11 @@ namespace FlippingIsHardTAS
                     
                     writer.Write(state.CameraPan);
                     writer.Write(state.CameraTilt);
+
+                    writer.Write(state.MoveXRaw);
+                    writer.Write(state.MoveYRaw);
+                    writer.Write(state.LookXRaw);
+                    writer.Write(state.LookYRaw);
                 }
             }
         }
@@ -63,7 +70,7 @@ namespace FlippingIsHardTAS
             using (var reader = new BinaryReader(stream))
             {
                 var header = reader.ReadString();
-                if (header != MAGIC_HEADER && header != LEGACY_HEADER)
+                if (header != MAGIC_HEADER && header != HEADER_TAS3 && header != HEADER_TAS2)
                 {
                     TASPlugin.Logger.LogError("Invalid TAS macro file format.");
                     return false;
@@ -72,7 +79,7 @@ namespace FlippingIsHardTAS
                 int seed = reader.ReadInt32();
                 ulong maxTick = reader.ReadUInt64();
                 // TAS2 files predate the greenzone — all their recorded state is valid
-                ulong greenzoneEnd = header == MAGIC_HEADER ? reader.ReadUInt64() : maxTick;
+                ulong greenzoneEnd = header != HEADER_TAS2 ? reader.ReadUInt64() : maxTick;
                 int count = reader.ReadInt32();
 
                 sys.Clear();
@@ -101,6 +108,17 @@ namespace FlippingIsHardTAS
                     float camTilt = reader.ReadSingle();
 
                     var state = new TASInputState(move, look, camRot, camPos, jump, interact, pPos, pRot, pVel, pAngVel, camPan, camTilt);
+
+                    if (header == MAGIC_HEADER)
+                    {
+                        state.MoveXRaw = reader.ReadSByte();
+                        state.MoveYRaw = reader.ReadSByte();
+                        state.LookXRaw = reader.ReadSByte();
+                        state.LookYRaw = reader.ReadSByte();
+                    }
+                    // Legacy files only stored floats; the constructor already derived the
+                    // raw bytes via QuantizeAxis (best effort — may carry quantization error).
+
                     sys.RecordedInputs[tick] = state;
                 }
 

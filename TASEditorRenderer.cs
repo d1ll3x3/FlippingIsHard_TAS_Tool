@@ -383,7 +383,7 @@ namespace FlippingIsHardTAS
 
             if (macro == null || !macro.HasRecordedData)
             {
-                GUI.Label(new Rect(x, y, 600, 22), "No macro loaded. Record one (F9) or import from the menu (B).");
+                GUI.Label(new Rect(x, y, 600, 22), "No macro loaded. Record one (F9) or load it from the FILE section below.");
                 GUI.DragWindow();
                 return;
             }
@@ -797,10 +797,13 @@ namespace FlippingIsHardTAS
             if (macro == null || _selectedTick < 0) return;
             var st = macro.GetStateAtTick((ulong)_selectedTick);
             if (st == null) return;
-            _editMoveX = st.Value.Move.x.ToString("F3");
-            _editMoveY = st.Value.Move.y.ToString("F3");
-            _editPan = st.Value.CameraPan.ToString("F2");
-            _editTilt = st.Value.CameraTilt.ToString("F2");
+            // Invariant culture: on Spanish Windows ToString gives "12,34" which the
+            // invariant parser in TryParseFloat rejects — Apply failed without edits.
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            _editMoveX = st.Value.Move.x.ToString("F3", inv);
+            _editMoveY = st.Value.Move.y.ToString("F3", inv);
+            _editPan = st.Value.CameraPan.ToString("F2", inv);
+            _editTilt = st.Value.CameraTilt.ToString("F2", inv);
         }
 
         private void ApplyEditFields(InputMacroSystem macro)
@@ -829,8 +832,12 @@ namespace FlippingIsHardTAS
 
         private static bool TryParseFloat(string str, out float value)
         {
-            return float.TryParse(str, System.Globalization.NumberStyles.Float,
-                                  System.Globalization.CultureInfo.InvariantCulture, out value);
+            // Accept both "12.5" and "12,5" (comma decimal separator on Spanish locales)
+            str = (str ?? "").Trim().Replace(',', '.');
+            if (!float.TryParse(str, System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out value))
+                return false;
+            return !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
         private void SetStatus(string msg)

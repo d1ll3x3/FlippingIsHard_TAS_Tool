@@ -66,18 +66,6 @@ namespace FlippingIsHardTAS
                 _macroSystem = new InputMacroSystem();
                 
                 _bindMenu = bindMenu;
-                _bindMenu.SetMacroSystem(_macroSystem);
-                _bindMenu.OnImportPlayMacro = () => {
-                    if (_macroSystem.HasRecordedData)
-                    {
-                        if (!_savestateSystem.HasMacroState)
-                            _savestateSystem.SaveState(_gameObjectFinder, _timeController.CurrentTick, true);
-                        _savestateSystem.LoadState(_gameObjectFinder, _timeController, true);
-                        Physics.SyncTransforms();
-                        StartPlaybackWithAxes(_savestateSystem.MacroTick);
-                        _bindMenu.RequestClose();
-                    }
-                };
                 _editor = new TASEditorRenderer(this);
                 GameInputPatch.MacroSystem = _macroSystem;
                 FishNetReconcilePatch.MacroSystem = _macroSystem;
@@ -249,6 +237,13 @@ namespace FlippingIsHardTAS
                             camPan, camTilt
                         );
 
+                        // Capture the exact sbytes the game consumed this tick — re-injecting
+                        // these during resim is bit-identical, unlike re-quantizing the floats.
+                        state.MoveXRaw = rawData.moveInputSBytes.X;
+                        state.MoveYRaw = rawData.moveInputSBytes.Y;
+                        state.LookXRaw = rawData.lookInputSBytes.X;
+                        state.LookYRaw = rawData.lookInputSBytes.Y;
+
                         bool record = true;
                         if (_robotActive)
                         {
@@ -270,6 +265,10 @@ namespace FlippingIsHardTAS
                                 state.Interact = scripted.Interact;
                                 state.CameraPan = scripted.CameraPan;
                                 state.CameraTilt = scripted.CameraTilt;
+                                state.MoveXRaw = scripted.MoveXRaw;
+                                state.MoveYRaw = scripted.MoveYRaw;
+                                state.LookXRaw = scripted.LookXRaw;
+                                state.LookYRaw = scripted.LookYRaw;
                             }
                         }
 
@@ -341,7 +340,6 @@ namespace FlippingIsHardTAS
         private void ResetTrainer()
         {
             StopRobotResim(completed: false);
-            ReleaseOSKeys();
             _editor?.ForceClose();
             _timeController?.ResetTick();
             if (_macroSystem != null)
@@ -418,46 +416,16 @@ namespace FlippingIsHardTAS
             }
         }
 
-        // ===== OS-level input playback (resim) =====
-        // The game's FishNet prediction pipeline reads input through native (inlined)
-        // code that no Harmony hook or memory write can reach. The only injection point
-        // the game can't tell apart from a human is the OS keyboard itself: during
-        // resimulation we literally press the keys with SendInput.
-        private bool _osW, _osA, _osS, _osD, _osSpace, _osE;
-        private bool _osKeysActive = false;
-
-        private int _keyReassertCounter = 0;
-
-        private void DriveOSKeysFromState(TASInputState st)
-        {
-            SetOSKey(KeyCode.W, ref _osW, st.Move.y > 0.3f);
-            SetOSKey(KeyCode.S, ref _osS, st.Move.y < -0.3f);
-            SetOSKey(KeyCode.A, ref _osA, st.Move.x < -0.3f);
-            SetOSKey(KeyCode.D, ref _osD, st.Move.x > 0.3f);
-            SetOSKey(KeyCode.Space, ref _osSpace, st.Jump);
-            SetOSKey(KeyCode.E, ref _osE, st.Interact);
-            _osKeysActive = true;
-
-            // Re-assert held keys every ~10 ticks: SendInput only emits an event on
-            // press/release, so if the game resets its input state mid-run (landing,
-            // checkpoint, respawn) a long-held key would silently vanish for it.
-            // A repeated key-down on an already-held key is harmless.
-            if (++_keyReassertCounter >= 10)
-            {
-                _keyReassertCounter = 0;
-                if (_osW) OSInput.SetKeyPressed(KeyCode.W, true);
-                if (_osA) OSInput.SetKeyPressed(KeyCode.A, true);
-                if (_osS) OSInput.SetKeyPressed(KeyCode.S, true);
-                if (_osD) OSInput.SetKeyPressed(KeyCode.D, true);
-                if (_osSpace) OSInput.SetKeyPressed(KeyCode.Space, true);
-                if (_osE) OSInput.SetKeyPressed(KeyCode.E, true);
-            }
-        }
-
         /// <summary>
         /// Starts the robot resimulation: seeks to the cut tick (greenzone end, or the
         /// macro start for a full resim), copies the edited inputs into a script, enters
-        /// the proven Edit-Mode recording path, and replays the script via the OS keyboard.
+        /// the proven Edit-Mode recording path, and replays the script by injecting the
+        /// recorded rawData sbytes into the game's input pipeline every tick.
+        ///
+        /// Known determinism limits: RewindToTick restores pos/rot/vel/angvel/camera/axes
+        /// only — FishNet internals, grounded latches and jump buffers are NOT restored,
+        /// so resims are most reliable from a grounded, low-velocity tick. Mid-macro RNG
+        /// state can't be restored either (only a full resim reseeds).
         /// </summary>
         public bool StartRobotResim(bool fromStart)
         {
@@ -507,10 +475,18 @@ namespace FlippingIsHardTAS
             _robotStuckTicks = 0;
             _robotPrevState = _macroSystem.GetStateAtTick(cutTick) ?? default;
 
+            // Full resim replays from tick 0 — equivalent to StartPlaying, so reseed the
+            // RNG the same way for any Random-driven game logic.
+            if (fromStart)
+                UnityEngine.Random.InitState(_macroSystem.RNGSeed);
+
             // No truncation: the robot overwrites rows in place as it advances, so the
             // user's input timeline never disappears (and survives an abort).
             _macroSystem.BeginRobotRecording();
-            DisableMouseDevice(); // keyboard must stay live for SendInput; mouse must not pollute look
+            // Real devices must not pollute the injected inputs: mouse would drift the
+            // look axes, keyboard (WASD mid-resim) would overwrite the scripted rawData.
+            DisableMouseDevice();
+            DisableKeyboardDevice();
             ApplyRobotSpeed();
             _resimDiagCount = 0;
             _robotActive = true;
@@ -540,15 +516,16 @@ namespace FlippingIsHardTAS
 
             if (_robotScript.TryGetValue(tick, out var st))
             {
-                // Primary input channel: write the script inputs straight into the
-                // game's rawData. SendInput keys never reach this game's InputSystem
-                // (diagnostics showed gameMove=(0,0) with keys held), but rawData
-                // writes demonstrably drive the player outside playback mode — the
-                // old "leftover input keeps moving the player after stop" proved it.
+                // Input channel: write the script's exact recorded sbytes straight into
+                // the game's rawData — the only injection point that demonstrably drives
+                // the player outside playback mode (SendInput never reached this game's
+                // InputSystem; diagnostics showed gameMove=(0,0) with keys held).
                 InjectRawDataFromScript(st, _robotPrevState);
-                DriveOSKeysFromState(st);
-                InjectAxesFromState(st); // keep camera pan/tilt on the recorded path
-                LogRobotDiagnostics(tick);
+                // Forcing pan/tilt and injecting look bytes are complementary, not in
+                // conflict: pan/tilt pins the start-of-tick camera to the recorded path
+                // while the look bytes reproduce the original intra-tick integration.
+                InjectAxesFromState(st);
+                LogRobotDiagnostics(tick, st);
 
                 // Stuck detection: script wants movement but the player hasn't moved for
                 // a full second → something froze the player. Abort losslessly instead of
@@ -582,12 +559,10 @@ namespace FlippingIsHardTAS
 
                 var data = handler.rawData;
 
-                data.moveInputSBytes = new EHS.Vector2SByte(
-                    (sbyte)Mathf.RoundToInt(Mathf.Clamp(st.Move.x, -1f, 1f) * 127f),
-                    (sbyte)Mathf.RoundToInt(Mathf.Clamp(st.Move.y, -1f, 1f) * 127f));
-                data.lookInputSBytes = new EHS.Vector2SByte(
-                    (sbyte)Mathf.RoundToInt(Mathf.Clamp(st.Look.x, -1f, 1f) * 127f),
-                    (sbyte)Mathf.RoundToInt(Mathf.Clamp(st.Look.y, -1f, 1f) * 127f));
+                // Bit-identical to the original run: these are the exact sbytes the game
+                // consumed at record time, not a re-quantization of the float values.
+                data.moveInputSBytes = new EHS.Vector2SByte(st.MoveXRaw, st.MoveYRaw);
+                data.lookInputSBytes = new EHS.Vector2SByte(st.LookXRaw, st.LookYRaw);
 
                 var buttons = data.Buttons;
 
@@ -620,9 +595,9 @@ namespace FlippingIsHardTAS
         {
             if (!_robotActive) return;
             _robotActive = false;
-            ReleaseOSKeys();
             ClearRawInputData(); // don't leave the last injected input driving the player
             EnableMouseDevice();
+            EnableKeyboardDevice();
             RestoreRobotSpeed();
 
             if (_macroSystem.IsEditMode)
@@ -687,39 +662,40 @@ namespace FlippingIsHardTAS
             catch { }
         }
 
-        private void SetOSKey(KeyCode key, ref bool state, bool desired)
+        private void DisableKeyboardDevice()
         {
-            if (state == desired) return;
-            OSInput.SetKeyPressed(key, desired);
-            state = desired;
+            try
+            {
+                if (UnityEngine.InputSystem.Keyboard.current != null)
+                    UnityEngine.InputSystem.InputSystem.DisableDevice(UnityEngine.InputSystem.Keyboard.current);
+            }
+            catch { }
         }
 
-        private void ReleaseOSKeys()
+        private void EnableKeyboardDevice()
         {
-            if (!_osKeysActive) return;
-            SetOSKey(KeyCode.W, ref _osW, false);
-            SetOSKey(KeyCode.A, ref _osA, false);
-            SetOSKey(KeyCode.S, ref _osS, false);
-            SetOSKey(KeyCode.D, ref _osD, false);
-            SetOSKey(KeyCode.Space, ref _osSpace, false);
-            SetOSKey(KeyCode.E, ref _osE, false);
-            _osKeysActive = false;
+            try
+            {
+                if (UnityEngine.InputSystem.Keyboard.current != null)
+                    UnityEngine.InputSystem.InputSystem.EnableDevice(UnityEngine.InputSystem.Keyboard.current);
+            }
+            catch { }
         }
 
         private int _resimDiagCount = 0;
 
         /// <summary>
-        /// Logs robot resim health (pressed keys, position, velocity, game flags) —
+        /// Logs robot resim health (injected inputs, position, velocity, game flags) —
         /// first ticks and then once per second.
         /// </summary>
-        private void LogRobotDiagnostics(ulong tick)
+        private void LogRobotDiagnostics(ulong tick, TASInputState st)
         {
             _resimDiagCount++;
             if (_resimDiagCount > 5 && _resimDiagCount % 60 != 0) return;
 
             try
             {
-                string keys = $"{(_osW ? "W" : "")}{(_osA ? "A" : "")}{(_osS ? "S" : "")}{(_osD ? "D" : "")}{(_osSpace ? "_" : "")}{(_osE ? "E" : "")}";
+                string inj = $"move=({st.MoveXRaw},{st.MoveYRaw}) look=({st.LookXRaw},{st.LookYRaw}){(st.Jump ? " J" : "")}{(st.Interact ? " I" : "")}";
                 string rbStr = _cachedRb != null
                     ? $"pos={_cachedRb.position} vel={_cachedRb.linearVelocity} kin={_cachedRb.isKinematic}"
                     : "rb=null";
@@ -744,7 +720,14 @@ namespace FlippingIsHardTAS
                 }
                 catch { }
 
-                TASPlugin.Logger.LogInfo($"TAS ROBOT t={tick} keys=[{keys}] gameMove={gameMove} {rbStr} gamePaused={gamePaused} gameEnded={gameEnded} summoned={summoned}");
+                // Drift vs the original run: distance between the live rigidbody and the
+                // position recorded at this tick. Growing past ~0.05 within the first
+                // ~100 ticks means the resim is desyncing.
+                string drift = _cachedRb != null
+                    ? $" drift={Vector3.Distance(_cachedRb.position, st.PlayerPosition):F3}"
+                    : "";
+
+                TASPlugin.Logger.LogInfo($"TAS ROBOT t={tick} inj[{inj}] gameMove={gameMove} {rbStr}{drift} gamePaused={gamePaused} gameEnded={gameEnded} summoned={summoned}");
             }
             catch (Exception ex)
             {
@@ -791,15 +774,11 @@ namespace FlippingIsHardTAS
 
             var data = handler.rawData;
 
-            Vector2 move = _macroSystem.GetCurrentMoveInput();
-            data.moveInputSBytes = new EHS.Vector2SByte(
-                (sbyte)Mathf.RoundToInt(Mathf.Clamp(move.x, -1f, 1f) * 127f),
-                (sbyte)Mathf.RoundToInt(Mathf.Clamp(move.y, -1f, 1f) * 127f));
+            var (moveXRaw, moveYRaw) = _macroSystem.GetCurrentMoveRaw();
+            data.moveInputSBytes = new EHS.Vector2SByte(moveXRaw, moveYRaw);
 
-            Vector2 look = _macroSystem.GetCurrentLookInput();
-            data.lookInputSBytes = new EHS.Vector2SByte(
-                (sbyte)Mathf.RoundToInt(Mathf.Clamp(look.x, -1f, 1f) * 127f),
-                (sbyte)Mathf.RoundToInt(Mathf.Clamp(look.y, -1f, 1f) * 127f));
+            var (lookXRaw, lookYRaw) = _macroSystem.GetCurrentLookRaw();
+            data.lookInputSBytes = new EHS.Vector2SByte(lookXRaw, lookYRaw);
 
             var buttons = data.Buttons;
 
@@ -842,8 +821,9 @@ namespace FlippingIsHardTAS
         // ===== Robot resim state =====
         // Resimulation = automated Edit Mode: playback freezes the player in this game
         // (native FishNet pipeline), but recording mode (F8) gives control back. The
-        // robot replays the edited inputs through the OS keyboard while the proven
-        // recording path re-captures the real state, regenerating the greenzone.
+        // robot replays the edited inputs by injecting the recorded rawData sbytes each
+        // tick while the proven recording path re-captures the real state, regenerating
+        // the greenzone.
         private bool _robotActive = false;
         private ulong _robotEndTick = 0;
         private ulong _robotCutTick = 0;
@@ -875,8 +855,8 @@ namespace FlippingIsHardTAS
                     
                     if (wasRecording)
                     {
-                        TASPlugin.Logger.LogInfo("TAS: Game ended — recording stopped.");
-                        _bindMenu.ToggleVisibility(); // open menu for export
+                        TASPlugin.Logger.LogInfo("TAS: Game ended — recording stopped. Save it from the TAS Editor's FILE section.");
+                        if (!_editor.IsVisible) _editor.ToggleVisibility();
                     }
                 }
             }
@@ -887,9 +867,10 @@ namespace FlippingIsHardTAS
         {
             if (TASBindMenuRenderer.IsVisibleGlobally) return;
 
-            // While the robot is replaying, the OS keyboard belongs to it. Only allow
-            // aborting via the EditMacro key (F8) — everything else is blocked so the
-            // robot's synthetic keypresses can't trigger TAS hotkeys.
+            // While the robot is replaying, only allow aborting via the EditMacro key
+            // (F8) — everything else is blocked so stray keypresses can't trigger TAS
+            // hotkeys mid-resim. (Legacy Input still sees keys while the InputSystem
+            // keyboard device is disabled — they're separate backends.)
             if (_robotActive)
             {
                 bool isAbortPressed = TASConfig.Settings.EditMacro.IsPressed();
@@ -1205,7 +1186,6 @@ namespace FlippingIsHardTAS
 
         private void StopPlayback()
         {
-            ReleaseOSKeys();
             _macroSystem.StopPlaying();
             ClearRawInputData();
             if (_cachedRb != null)
@@ -1540,7 +1520,6 @@ namespace FlippingIsHardTAS
             try
             {
                 StopRobotResim(completed: false);
-                ReleaseOSKeys();
                 UnsubscribeFromFishNet();
                 ToggleCinemachine(true);
             }
