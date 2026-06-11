@@ -505,7 +505,6 @@ namespace FlippingIsHardTAS
 
             _robotCutTick = cutTick;
             _robotStuckTicks = 0;
-            _hasUndoableResim = false;
             _robotPrevState = _macroSystem.GetStateAtTick(cutTick) ?? default;
 
             // No truncation: the robot overwrites rows in place as it advances, so the
@@ -631,16 +630,14 @@ namespace FlippingIsHardTAS
 
             if (completed)
             {
-                // Keep the script so the user can "Undo resim" if the result is bad
-                _hasUndoableResim = true;
                 TASPlugin.Logger.LogInfo($"TAS: ROBOT RESIM completed — greenzone now ends at {_macroSystem.GreenzoneEnd}.");
+                _robotScript.Clear();
             }
             else
             {
                 // Lossless abort: put the macro back exactly as it was before the resim
                 RestoreMacroFromScript();
                 _robotScript.Clear();
-                _hasUndoableResim = false;
                 TASPlugin.Logger.LogInfo($"TAS: ROBOT RESIM aborted — macro restored (greenzone back at {_macroSystem.GreenzoneEnd}).");
             }
 
@@ -657,24 +654,6 @@ namespace FlippingIsHardTAS
                 _macroSystem.GreenzoneEnd = _robotCutTick;
         }
 
-        /// <summary>Undoes the last completed robot resim (editor button).</summary>
-        public bool UndoLastResim()
-        {
-            if (_robotActive || !_hasUndoableResim || _robotScript.Count == 0) return false;
-            RestoreMacroFromScript();
-            _robotScript.Clear();
-            _hasUndoableResim = false;
-            TASPlugin.Logger.LogInfo($"TAS: Last resim undone — macro restored (greenzone back at {_macroSystem.GreenzoneEnd}).");
-            return true;
-        }
-
-        /// <summary>Called by the editor when the user edits inputs — the undo snapshot no longer matches.</summary>
-        public void InvalidateResimUndo()
-        {
-            if (_robotActive) return;
-            _hasUndoableResim = false;
-            _robotScript.Clear();
-        }
 
         private void ApplyRobotSpeed()
         {
@@ -869,13 +848,11 @@ namespace FlippingIsHardTAS
         private ulong _robotEndTick = 0;
         private ulong _robotCutTick = 0;
         private int _robotStuckTicks = 0;
-        private bool _hasUndoableResim = false;
         // Previous script state — needed for clean pressed/released button edges
         private TASInputState _robotPrevState;
         private readonly System.Collections.Generic.Dictionary<ulong, TASInputState> _robotScript
             = new System.Collections.Generic.Dictionary<ulong, TASInputState>();
         public bool IsRobotActive => _robotActive;
-        public bool HasUndoableResim => _hasUndoableResim && !_robotActive;
         public float RobotSpeed { get; set; } = 1f; // 1, 0.3 or 0.1 — applied at robot start
         
         private void CheckGameEnd()
@@ -975,7 +952,7 @@ namespace FlippingIsHardTAS
                 {
                     _macroSystem.StopRecording();
                 }
-                else
+                else if (!_macroSystem.IsPlaying) // recording during replay would wipe the macro
                 {
                     var player = _gameObjectFinder.FindPlayerTransform();
                     if (player != null)
@@ -1111,6 +1088,47 @@ namespace FlippingIsHardTAS
         public void EditorTogglePause()
         {
             _timeController?.TogglePause();
+        }
+
+        /// <summary>Advances exactly one tick (editor button). Only while paused.</summary>
+        public void EditorStepForward()
+        {
+            if (_timeController == null || !_timeController.IsPaused) return;
+            _timeController.TickFrameAdvance(justPressed: true);
+        }
+
+        /// <summary>Steps one tick back (editor button). Mirrors the rewind hotkey guards.</summary>
+        public void EditorStepBack()
+        {
+            if (_timeController == null || !_timeController.IsPaused) return;
+            if (_timeController.CurrentTick == 0 || _macroSystem == null) return;
+
+            if (_macroSystem.IsPlaying)
+                RewindOneTick();
+            else if (_macroSystem.IsEditMode || _macroSystem.IsRecording)
+                RewindRecording(_timeController.CurrentTick - 1);
+        }
+
+        /// <summary>
+        /// Called by the editor after importing a macro file: rebuilds the macro-start
+        /// savestate from the macro's own first recorded tick, so playback starts from
+        /// the real recording origin instead of wherever the player happened to stand.
+        /// </summary>
+        public void EditorMacroImported()
+        {
+            if (_macroSystem == null || !_macroSystem.HasRecordedData) return;
+
+            ulong first = ulong.MaxValue;
+            foreach (var k in _macroSystem.RecordedInputs.Keys)
+                if (k < first) first = k;
+
+            var st = _macroSystem.GetStateAtTick(first);
+            if (st == null) return;
+            var s = st.Value;
+
+            _savestateSystem.SetMacroState(new SavestateSystem.SaveStateData(
+                s.PlayerPosition, s.PlayerRotation, s.PlayerVelocity, s.PlayerAngularVelocity,
+                s.CameraRotation, s.CameraPosition, s.CameraPan, s.CameraTilt), first);
         }
 
         /// <summary>
@@ -1449,7 +1467,9 @@ namespace FlippingIsHardTAS
                 _timeController.IsSlowMo,
                 _timeController.IsSlowMoBoost,
                 _timeController.IsFastForward,
-                _macroSystem.IsEditMode
+                _macroSystem.IsEditMode,
+                _macroSystem.GreenzoneEnd,
+                _macroSystem.MaxTick
             );
         }
         

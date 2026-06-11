@@ -188,6 +188,45 @@ namespace FlippingIsHardTAS
             if (tick > 0 && GreenzoneEnd >= tick) GreenzoneEnd = tick - 1;
         }
 
+        /// <summary>
+        /// Inserts a new frame at the given tick, shifting every later entry up by one.
+        /// The new row duplicates the previous tick's data. Greenzone is cut before the
+        /// insertion point (all downstream state is now stale).
+        /// </summary>
+        public void InsertTickAt(ulong tick)
+        {
+            var shifted = new Dictionary<ulong, TASInputState>(RecordedInputs.Count + 1);
+            foreach (var kvp in RecordedInputs)
+                shifted[kvp.Key >= tick ? kvp.Key + 1 : kvp.Key] = kvp.Value;
+
+            TASInputState template;
+            if (!RecordedInputs.TryGetValue(tick > 0 ? tick - 1 : tick, out template))
+                RecordedInputs.TryGetValue(tick, out template);
+            shifted[tick] = template;
+
+            RecordedInputs = shifted;
+            MaxTick++;
+            if (GreenzoneEnd >= tick) GreenzoneEnd = tick > 0 ? tick - 1 : 0;
+        }
+
+        /// <summary>
+        /// Deletes the frame at the given tick, shifting every later entry down by one.
+        /// Greenzone is cut before the deletion point.
+        /// </summary>
+        public void DeleteTickAt(ulong tick)
+        {
+            var shifted = new Dictionary<ulong, TASInputState>(RecordedInputs.Count);
+            foreach (var kvp in RecordedInputs)
+            {
+                if (kvp.Key == tick) continue;
+                shifted[kvp.Key > tick ? kvp.Key - 1 : kvp.Key] = kvp.Value;
+            }
+
+            RecordedInputs = shifted;
+            if (MaxTick > 0) MaxTick--;
+            if (GreenzoneEnd >= tick) GreenzoneEnd = tick > 0 ? tick - 1 : 0;
+        }
+
         public void RecordTick(ulong currentTick, TASInputState state)
         {
             if (!IsRecording) return;

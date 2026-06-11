@@ -51,9 +51,13 @@ namespace FlippingIsHardTAS
         private GUIStyle _styleSection;
         private float _cachedScale = -1f;
 
+        private ulong _greenzoneEnd = 0;
+        private ulong _maxTick = 0;
+
         public void UpdateData(Vector3 pos, float speed, bool hasSaved, bool isRecording,
                                bool isPlaying, bool isPaused, ulong currentTick,
-                               bool isSlowMo = false, bool isSlowMoBoost = false, bool isFastForward = false, bool isEditMode = false)
+                               bool isSlowMo = false, bool isSlowMoBoost = false, bool isFastForward = false, bool isEditMode = false,
+                               ulong greenzoneEnd = 0, ulong maxTick = 0)
         {
             if (_cachedCoords == null || Vector3.Distance(_currentPosition, pos) > 0.05f)
             {
@@ -78,6 +82,8 @@ namespace FlippingIsHardTAS
             _isEditMode       = isEditMode;
             _isFastForward    = isFastForward;
             _currentTick      = currentTick;
+            _greenzoneEnd     = greenzoneEnd;
+            _maxTick          = maxTick;
             _showOverlay      = Application.isFocused;
         }
 
@@ -147,7 +153,7 @@ namespace FlippingIsHardTAS
             float pad = BASE_PAD;
             float totalH = 35f * sc  // header + tick + state
                          + sectionH + lineH * 2  // savestate section
-                         + sectionH + lineH * 5  // macro section
+                         + sectionH + lineH * 6  // macro section
                          + sectionH + lineH * 4  // playback section
                          + sectionH + lineH * 2   // ui section
                          + 14f * sc;              // padding
@@ -228,7 +234,7 @@ namespace FlippingIsHardTAS
             // ── Macro ──
             DrawSectionLabel(cx, ref cy, "MACRO", ctrlW, lineH);
             DrawKeySingle(cx, ref cy, $"[{s.RecordMacro}] Record",
-                _isRecording ? _recColor : _dimColor, ctrlW, lineH);
+                _isRecording ? _recColor : (_isPlaying ? new Color(0.6f, 0.2f, 0.2f) : _dimColor), ctrlW, lineH);
             DrawKeySingle(cx, ref cy, $"[{s.PlayMacro}] Play / Stop",
                 _isEditMode || _isRecording ? new Color(0.6f, 0.2f, 0.2f) : (_isPlaying ? _playColor : _dimColor), ctrlW, lineH);
             DrawKeySingle(cx, ref cy, $"[{s.ResetTick}] Reset Tick", _dimColor, ctrlW, lineH);
@@ -236,6 +242,16 @@ namespace FlippingIsHardTAS
                 _isFastForward ? new Color(0.2f, 0.8f, 1f) : _dimColor, ctrlW, lineH);
             DrawKeySingle(cx, ref cy, $"[{s.EditMacro}] Edit Macro",
                 _isEditMode ? new Color(1f, 0.5f, 0f) : _dimColor, ctrlW, lineH);
+            if (_maxTick > 0)
+            {
+                bool gzComplete = _greenzoneEnd >= _maxTick;
+                DrawKeySingle(cx, ref cy, $"Greenzone: {_greenzoneEnd} / {_maxTick}",
+                    gzComplete ? _savedColor : _dimColor, ctrlW, lineH);
+            }
+            else
+            {
+                DrawKeySingle(cx, ref cy, "Greenzone: —", _dimColor, ctrlW, lineH);
+            }
 
             // ── Playback Controls ──
             DrawSectionLabel(cx, ref cy, "PLAYBACK CONTROLS", ctrlW, lineH);

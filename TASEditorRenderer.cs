@@ -16,7 +16,7 @@ namespace FlippingIsHardTAS
 
         private readonly TASController _controller;
         private bool _isVisible = false;
-        private Rect _windowRect = new Rect(60, 60, 680, 660);
+        private Rect _windowRect = new Rect(60, 40, 680, 740);
         private GUI.WindowFunction _windowDelegate;
 
         // Virtual scrolling
@@ -47,6 +47,74 @@ namespace FlippingIsHardTAS
         // One-time safety net per editor session: resim overwrites recorded physics
         // state, so a broken resim would silently destroy the macro without this.
         private bool _backupDone = false;
+
+        // ===== Undo/redo (full-macro snapshots; TASInputState is a struct so a
+        // dictionary copy is a deep copy) =====
+        private class MacroSnapshot
+        {
+            public System.Collections.Generic.Dictionary<ulong, TASInputState> Rows;
+            public ulong MaxTick;
+            public ulong GreenzoneEnd;
+        }
+        private readonly System.Collections.Generic.List<MacroSnapshot> _undoStack
+            = new System.Collections.Generic.List<MacroSnapshot>();
+        private readonly System.Collections.Generic.List<MacroSnapshot> _redoStack
+            = new System.Collections.Generic.List<MacroSnapshot>();
+        private const int UNDO_CAP = 20;
+
+        // Range clipboard: (offset from range start, state)
+        private readonly System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<ulong, TASInputState>> _clipboard
+            = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<ulong, TASInputState>>();
+
+        // Macro file name for the Save/Load section
+        private string _fileName = "macro1";
+
+        private MacroSnapshot TakeSnapshot(InputMacroSystem macro) => new MacroSnapshot
+        {
+            Rows = new System.Collections.Generic.Dictionary<ulong, TASInputState>(macro.RecordedInputs),
+            MaxTick = macro.MaxTick,
+            GreenzoneEnd = macro.GreenzoneEnd,
+        };
+
+        private void ApplySnapshot(InputMacroSystem macro, MacroSnapshot snap)
+        {
+            macro.RecordedInputs = new System.Collections.Generic.Dictionary<ulong, TASInputState>(snap.Rows);
+            macro.MaxTick = snap.MaxTick;
+            macro.GreenzoneEnd = snap.GreenzoneEnd;
+        }
+
+        /// <summary>Call BEFORE any mutation of the macro (edits, insert/delete, paste, resim).</summary>
+        private void PushUndo(InputMacroSystem macro)
+        {
+            _undoStack.Add(TakeSnapshot(macro));
+            if (_undoStack.Count > UNDO_CAP) _undoStack.RemoveAt(0);
+            _redoStack.Clear();
+        }
+
+        private void PopUndoDiscard()
+        {
+            if (_undoStack.Count > 0) _undoStack.RemoveAt(_undoStack.Count - 1);
+        }
+
+        private void DoUndo(InputMacroSystem macro)
+        {
+            if (_undoStack.Count == 0) { SetStatus("Nothing to undo."); return; }
+            _redoStack.Add(TakeSnapshot(macro));
+            var snap = _undoStack[_undoStack.Count - 1];
+            _undoStack.RemoveAt(_undoStack.Count - 1);
+            ApplySnapshot(macro, snap);
+            SetStatus($"Undo — greenzone at {macro.GreenzoneEnd}, {macro.RecordedInputs.Count} ticks.");
+        }
+
+        private void DoRedo(InputMacroSystem macro)
+        {
+            if (_redoStack.Count == 0) { SetStatus("Nothing to redo."); return; }
+            _undoStack.Add(TakeSnapshot(macro));
+            var snap = _redoStack[_redoStack.Count - 1];
+            _redoStack.RemoveAt(_redoStack.Count - 1);
+            ApplySnapshot(macro, snap);
+            SetStatus($"Redo — greenzone at {macro.GreenzoneEnd}, {macro.RecordedInputs.Count} ticks.");
+        }
 
         // Styles
         private GUIStyle _styleCell, _styleCellOn, _styleHeader;
@@ -361,18 +429,26 @@ namespace FlippingIsHardTAS
                 if (CustomButton(new Rect(x + 66, y, 70, 22), "Resim"))
                 {
                     BackupMacroOnce(macro);
+                    PushUndo(macro);
                     if (_controller.StartRobotResim(fromStart: false))
                         SetStatus("Robot resim from greenzone end — hands off the keyboard!");
                     else
+                    {
+                        PopUndoDiscard();
                         SetStatus("Nothing to resim (or busy) — edit an input first.");
+                    }
                 }
                 if (CustomButton(new Rect(x + 142, y, 90, 22), "Full Resim"))
                 {
                     BackupMacroOnce(macro);
+                    PushUndo(macro);
                     if (_controller.StartRobotResim(fromStart: true))
                         SetStatus("Robot resim of the whole macro — hands off the keyboard!");
                     else
+                    {
+                        PopUndoDiscard();
                         SetStatus("Could not start full resim.");
+                    }
                 }
                 if (CustomButton(new Rect(x + 238, y, 90, 22), $"Speed: {_controller.RobotSpeed:0.#}x"))
                 {
@@ -384,16 +460,29 @@ namespace FlippingIsHardTAS
                     CenterOn(curTick);
                 if (CustomButton(new Rect(x + 435, y, 70, 22), _controller.EditorIsPaused ? "Resume" : "Pause"))
                     _controller.EditorTogglePause();
-                if (_controller.HasUndoableResim)
+                y += 28;
+
+                // ── Toolbar row 2: edit operations ──
+                if (CustomButton(new Rect(x, y, 60, 22), "Undo"))
                 {
-                    GUI.backgroundColor = new Color(0.8f, 0.7f, 0.2f);
-                    if (CustomButton(new Rect(x + 511, y, 70, 22), "Undo"))
-                    {
-                        if (_controller.UndoLastResim())
-                            SetStatus("Last resim undone — macro restored to its pre-resim state.");
-                    }
-                    GUI.backgroundColor = Color.white;
+                    if (!EditingLocked()) DoUndo(macro);
                 }
+                if (CustomButton(new Rect(x + 66, y, 60, 22), "Redo"))
+                {
+                    if (!EditingLocked()) DoRedo(macro);
+                }
+                if (CustomButton(new Rect(x + 132, y, 36, 22), "<"))
+                    _controller.EditorStepBack();
+                if (CustomButton(new Rect(x + 174, y, 36, 22), ">"))
+                    _controller.EditorStepForward();
+                if (CustomButton(new Rect(x + 216, y, 70, 22), "Insert"))
+                    InsertAtSelection(macro);
+                if (CustomButton(new Rect(x + 292, y, 70, 22), "Delete"))
+                    DeleteAtSelection(macro);
+                if (CustomButton(new Rect(x + 368, y, 60, 22), "Copy"))
+                    CopyRange(macro);
+                if (CustomButton(new Rect(x + 434, y, 95, 22), "Paste @ sel"))
+                    PasteAtSelection(macro);
                 y += 30;
             }
 
@@ -423,6 +512,9 @@ namespace FlippingIsHardTAS
 
             // ── Range tool ──
             DrawRangeTool(macro, x, ref y);
+
+            // ── Macro file save/load ──
+            DrawFileSection(macro, x, ref y);
 
             if (_statusTimer > 0f)
             {
@@ -506,7 +598,7 @@ namespace FlippingIsHardTAS
                 if (!EditingLocked())
                 {
                     BackupMacroOnce(macro);
-                    _controller.InvalidateResimUndo();
+                    PushUndo(macro);
                     macro.SetInputAt(tick, s.Move, !s.Jump, s.Interact, s.CameraPan, s.CameraTilt);
                     if (_selectedTick == (long)tick) LoadSelectionIntoFields();
                 }
@@ -518,7 +610,7 @@ namespace FlippingIsHardTAS
                 if (!EditingLocked())
                 {
                     BackupMacroOnce(macro);
-                    _controller.InvalidateResimUndo();
+                    PushUndo(macro);
                     macro.SetInputAt(tick, s.Move, s.Jump, !s.Interact, s.CameraPan, s.CameraTilt);
                     if (_selectedTick == (long)tick) LoadSelectionIntoFields();
                 }
@@ -580,7 +672,7 @@ namespace FlippingIsHardTAS
             }
             if (EditingLocked()) return;
             BackupMacroOnce(macro);
-            _controller.InvalidateResimUndo();
+            PushUndo(macro);
             int applied = 0;
             for (ulong t = from; t <= to && t <= macro.MaxTick; t++)
             {
@@ -594,6 +686,109 @@ namespace FlippingIsHardTAS
                 applied++;
             }
             SetStatus($"Applied to {applied} ticks ({from}–{to}). Greenzone cut at {macro.GreenzoneEnd}.");
+        }
+
+        private void InsertAtSelection(InputMacroSystem macro)
+        {
+            if (EditingLocked()) return;
+            if (_selectedTick < 0) { SetStatus("Select a tick first (click its number)."); return; }
+            BackupMacroOnce(macro);
+            PushUndo(macro);
+            macro.InsertTickAt((ulong)_selectedTick);
+            SetStatus($"Frame inserted at {_selectedTick} — later frames shifted +1, greenzone cut at {macro.GreenzoneEnd}.");
+        }
+
+        private void DeleteAtSelection(InputMacroSystem macro)
+        {
+            if (EditingLocked()) return;
+            if (_selectedTick < 0) { SetStatus("Select a tick first (click its number)."); return; }
+            BackupMacroOnce(macro);
+            PushUndo(macro);
+            macro.DeleteTickAt((ulong)_selectedTick);
+            if ((ulong)_selectedTick > macro.MaxTick) _selectedTick = (long)macro.MaxTick;
+            LoadSelectionIntoFields();
+            SetStatus($"Frame {_selectedTick} deleted — later frames shifted -1, greenzone cut at {macro.GreenzoneEnd}.");
+        }
+
+        private void CopyRange(InputMacroSystem macro)
+        {
+            if (!ulong.TryParse(_rangeFrom, out ulong from) || !ulong.TryParse(_rangeTo, out ulong to) || to < from)
+            {
+                SetStatus("Invalid range (set From/To in the RANGE section).");
+                return;
+            }
+            _clipboard.Clear();
+            for (ulong t = from; t <= to && t <= macro.MaxTick; t++)
+            {
+                var st = macro.GetStateAtTick(t);
+                if (st != null)
+                    _clipboard.Add(new System.Collections.Generic.KeyValuePair<ulong, TASInputState>(t - from, st.Value));
+            }
+            SetStatus($"Copied {_clipboard.Count} frames ({from}–{to}).");
+        }
+
+        private void PasteAtSelection(InputMacroSystem macro)
+        {
+            if (EditingLocked()) return;
+            if (_clipboard.Count == 0) { SetStatus("Clipboard empty — use Copy first."); return; }
+            if (_selectedTick < 0) { SetStatus("Select a target tick first (click its number)."); return; }
+
+            BackupMacroOnce(macro);
+            PushUndo(macro);
+            int pasted = 0;
+            foreach (var kvp in _clipboard)
+            {
+                ulong target = (ulong)_selectedTick + kvp.Key;
+                if (target > macro.MaxTick) break;
+                var src = kvp.Value;
+                macro.SetInputAt(target, src.Move, src.Jump, src.Interact, src.CameraPan, src.CameraTilt);
+                pasted++;
+            }
+            SetStatus($"Pasted {pasted} frames at {_selectedTick} — greenzone cut at {macro.GreenzoneEnd}.");
+        }
+
+        private void DrawFileSection(InputMacroSystem macro, float x, ref float y)
+        {
+            GUI.Label(new Rect(x, y, 200, 20), "FILE", _styleHeader);
+            y += 22;
+
+            GUI.Label(new Rect(x, y, 45, 20), "Name:");
+            _fileName = SimpleTextField(new Rect(x + 45, y, 160, 20), "fname", _fileName);
+
+            string path = System.IO.Path.Combine(BepInEx.Paths.PluginPath,
+                "FlippingIsHardTAS", "Macros", _fileName + ".tas");
+
+            if (CustomButton(new Rect(x + 215, y, 70, 22), "Save"))
+            {
+                if (macro.HasRecordedData)
+                {
+                    try { macro.ExportMacro(path); SetStatus($"Saved to Macros/{_fileName}.tas"); }
+                    catch (Exception ex) { SetStatus("Save failed!"); TASPlugin.Logger.LogError(ex.ToString()); }
+                }
+                else SetStatus("No macro to save.");
+            }
+            if (CustomButton(new Rect(x + 291, y, 70, 22), "Load"))
+            {
+                if (!EditingLocked())
+                {
+                    _controller.EditorStopPlayback();
+                    PushUndo(macro);
+                    if (macro.ImportMacro(path))
+                    {
+                        _controller.EditorMacroImported();
+                        _selectedTick = -1;
+                        _topTick = 0;
+                        ClampScroll();
+                        SetStatus($"Loaded Macros/{_fileName}.tas — {macro.RecordedInputs.Count} ticks.");
+                    }
+                    else
+                    {
+                        PopUndoDiscard();
+                        SetStatus($"Could not load Macros/{_fileName}.tas");
+                    }
+                }
+            }
+            y += 28;
         }
 
         private void LoadSelectionIntoFields()
@@ -627,7 +822,7 @@ namespace FlippingIsHardTAS
 
             var s = st.Value;
             BackupMacroOnce(macro);
-            _controller.InvalidateResimUndo();
+            PushUndo(macro);
             macro.SetInputAt((ulong)_selectedTick, new Vector2(mx, my), s.Jump, s.Interact, pan, tilt);
             SetStatus($"Tick {_selectedTick} edited. Greenzone cut at {macro.GreenzoneEnd}.");
         }
