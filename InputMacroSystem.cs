@@ -93,21 +93,6 @@ namespace FlippingIsHardTAS
             IsRecording = true;
             TASPlugin.Logger.LogInfo($"TAS: Entered Edit Mode at tick {currentTick} — kept {RecordedInputs.Count} previous ticks (including cut point), now recording from tick {currentTick + 1}.");
         }
-        
-        /// <summary>
-        /// Enters robot-recording mode: like EnterEditMode but WITHOUT truncating the
-        /// macro. The robot overwrites entries in place as it re-simulates, so the
-        /// user's input timeline stays visible (and recoverable on abort). MaxTick is
-        /// left untouched.
-        /// </summary>
-        public void BeginRobotRecording()
-        {
-            IsPlaying = false;
-            IsEditMode = true;
-            IsRecording = true;
-            EnableInputSystemDevices();
-            TASPlugin.Logger.LogInfo($"TAS: Robot recording started — macro kept intact ({RecordedInputs.Count} ticks, MaxTick={MaxTick}).");
-        }
 
         /// <summary>
         /// Exits Edit Mode: stops recording user inputs. The macro now contains
@@ -164,7 +149,9 @@ namespace FlippingIsHardTAS
         public bool HasRecordedData => RecordedInputs.Count > 0;
         
         /// <summary>
-        /// Truncates all recorded data from this tick onward.
+        /// Truncates all recorded data from this tick onward. Every remaining tick keeps its
+        /// valid recorded state (no resim), so the greenzone simply follows MaxTick.
+        /// </summary>
         public void TruncateAt(ulong tick)
         {
             var keysToRemove = new List<ulong>();
@@ -175,13 +162,14 @@ namespace FlippingIsHardTAS
             }
             foreach (var key in keysToRemove)
                 RecordedInputs.Remove(key);
-            if (tick > 0 && GreenzoneEnd >= tick) GreenzoneEnd = tick - 1;
+            if (tick > 0) MaxTick = tick - 1;
+            GreenzoneEnd = MaxTick;
         }
 
         /// <summary>
         /// Inserts a new frame at the given tick, shifting every later entry up by one.
-        /// The new row duplicates the previous tick's data. Greenzone is cut before the
-        /// insertion point (all downstream state is now stale).
+        /// The new row duplicates the previous tick's recorded state (replay shows a small
+        /// position seam at the insertion point — expected without resim).
         /// </summary>
         public void InsertTickAt(ulong tick)
         {
@@ -196,12 +184,11 @@ namespace FlippingIsHardTAS
 
             RecordedInputs = shifted;
             MaxTick++;
-            if (GreenzoneEnd >= tick) GreenzoneEnd = tick > 0 ? tick - 1 : 0;
+            GreenzoneEnd = MaxTick;
         }
 
         /// <summary>
         /// Deletes the frame at the given tick, shifting every later entry down by one.
-        /// Greenzone is cut before the deletion point.
         /// </summary>
         public void DeleteTickAt(ulong tick)
         {
@@ -214,7 +201,7 @@ namespace FlippingIsHardTAS
 
             RecordedInputs = shifted;
             if (MaxTick > 0) MaxTick--;
-            if (GreenzoneEnd >= tick) GreenzoneEnd = tick > 0 ? tick - 1 : 0;
+            GreenzoneEnd = MaxTick;
         }
 
         public void RecordTick(ulong currentTick, TASInputState state)
@@ -227,9 +214,10 @@ namespace FlippingIsHardTAS
         }
 
         /// <summary>
-        /// Replaces ONLY the input portion of the state at a tick (editor use).
-        /// The recorded physics state at the tick itself stays valid (it's the pre-tick state),
-        /// but every state AFTER it becomes stale, so the greenzone is cut back to this tick.
+        /// Replaces the input portion of the state at a tick (editor use). Data-only: with no
+        /// resimulation, this edits the stored .tas but does NOT change the replayed trajectory
+        /// (the recorded physics state is what plays back). To actually change a run, re-record
+        /// from this tick. The recorded physics state stays valid, so greenzone is untouched.
         /// </summary>
         public void SetInputAt(ulong tick, Vector2 move, bool jump, bool interact, float camPan, float camTilt)
         {
@@ -244,36 +232,23 @@ namespace FlippingIsHardTAS
             state.Interact = interact;
             state.CameraPan = camPan;
             state.CameraTilt = camTilt;
-            // An edited input has no captured rawData bytes — the quantized float IS its definition.
             state.MoveXRaw = TASInputState.QuantizeAxis(move.x);
             state.MoveYRaw = TASInputState.QuantizeAxis(move.y);
             RecordedInputs[tick] = state;
-
-            if (GreenzoneEnd > tick) GreenzoneEnd = tick;
         }
 
         /// <summary>
-        /// During resimulation (playback beyond the greenzone), overwrites the stale physics/camera
-        /// state at this tick with the freshly simulated one, extending the greenzone.
-        /// Inputs at the tick are preserved untouched.
+        /// Overwrites the FULL recorded state (inputs + physics + camera) at a tick. Used by
+        /// timeline surgery (paste): the replay then reproduces the pasted segment's real
+        /// trajectory, with a possible position seam at the boundary.
         /// </summary>
-        public void ResimCaptureTick(ulong tick, Vector3 playerPos, Quaternion playerRot,
-                                     Vector3 playerVel, Vector3 playerAngVel,
-                                     Vector3 camPos, Quaternion camRot)
+        public void SetFullStateAt(ulong tick, TASInputState state)
         {
-            if (!RecordedInputs.TryGetValue(tick, out var state)) return;
-
-            state.PlayerPosition = playerPos;
-            state.PlayerRotation = playerRot;
-            state.PlayerVelocity = playerVel;
-            state.PlayerAngularVelocity = playerAngVel;
-            state.CameraPosition = camPos;
-            state.CameraRotation = camRot;
+            if (tick > MaxTick) return;
             RecordedInputs[tick] = state;
-
             if (tick > GreenzoneEnd) GreenzoneEnd = tick;
         }
-        
+
         public void PlaybackTick(ulong currentTick)
         {
             if (!IsPlaying) return;

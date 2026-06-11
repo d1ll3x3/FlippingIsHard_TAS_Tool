@@ -244,42 +244,8 @@ namespace FlippingIsHardTAS
                         state.LookXRaw = rawData.lookInputSBytes.X;
                         state.LookYRaw = rawData.lookInputSBytes.Y;
 
-                        bool record = true;
-                        if (_robotActive)
-                        {
-                            ulong t = _timeController.CurrentTick;
-                            if (t > _robotEndTick)
-                            {
-                                // Don't grow the macro past its original end (+1 tick drift per resim)
-                                record = false;
-                            }
-                            else if (_robotScript.TryGetValue(t, out var scripted))
-                            {
-                                // Preserve the user's exact input timeline: rows keep the
-                                // scripted values; only physics/camera state comes from the
-                                // live simulation. (The robot's OS keys lag ~2 ticks, so the
-                                // raw capture would shift and mangle the edited inputs.)
-                                state.Move = scripted.Move;
-                                state.Look = scripted.Look;
-                                state.Jump = scripted.Jump;
-                                state.Interact = scripted.Interact;
-                                state.CameraPan = scripted.CameraPan;
-                                state.CameraTilt = scripted.CameraTilt;
-                                state.MoveXRaw = scripted.MoveXRaw;
-                                state.MoveYRaw = scripted.MoveYRaw;
-                                state.LookXRaw = scripted.LookXRaw;
-                                state.LookYRaw = scripted.LookYRaw;
-                            }
-                        }
-
-                        if (record)
-                            _macroSystem.RecordTick(_timeController.CurrentTick, state);
+                        _macroSystem.RecordTick(_timeController.CurrentTick, state);
                     }
-                }
-
-                if (_robotActive)
-                {
-                    UpdateRobotResim();
                 }
 
                 if (_macroSystem.IsPlaying)
@@ -290,18 +256,9 @@ namespace FlippingIsHardTAS
                     {
                         StopPlayback();
                     }
-                    else if (tick > _macroSystem.GreenzoneEnd)
-                    {
-                        // End of valid recorded state. Playback cannot simulate past this
-                        // point (the game freezes the player while IsPlaying) — pause on the
-                        // last valid tick; the robot resim handles everything beyond it.
-                        if (!_timeController.IsPaused) _timeController.TogglePause();
-                        RewindToTick(_macroSystem.GreenzoneEnd);
-                        _macroSystem.PlaybackTick(_timeController.CurrentTick);
-                        TASPlugin.Logger.LogInfo($"TAS: Playback paused at greenzone end (tick {_macroSystem.GreenzoneEnd}). Use Resim to re-simulate the rest.");
-                    }
                     else
                     {
+                        // Every recorded tick has valid state — the replay injects it (no sim).
                         _macroSystem.PlaybackTick(tick);
 
                         if (Camera.main != null)
@@ -339,7 +296,6 @@ namespace FlippingIsHardTAS
 
         private void ResetTrainer()
         {
-            StopRobotResim(completed: false);
             _editor?.ForceClose();
             _timeController?.ResetTick();
             if (_macroSystem != null)
@@ -398,340 +354,12 @@ namespace FlippingIsHardTAS
                 if (!enabled || !_isInGame) return;
                 if (_macroSystem == null) return;
 
-                // Robot resim: refresh the injected inputs right before the game
-                // processes the tick, in case anything reset rawData since FixedUpdate.
-                if (_robotActive)
-                {
-                    if (_robotScript.TryGetValue(_timeController.CurrentTick, out var st))
-                        InjectRawDataFromScript(st, _robotPrevState);
-                    return;
-                }
-
                 if (!_macroSystem.IsPlaying) return;
                 InjectRawInputData();
             }
             catch (Exception ex)
             {
                 TASPlugin.Logger.LogError($"Error in OnPreTick: {ex}");
-            }
-        }
-
-        /// <summary>
-        /// Starts the robot resimulation: seeks to the cut tick (greenzone end, or the
-        /// macro start for a full resim), copies the edited inputs into a script, enters
-        /// the proven Edit-Mode recording path, and replays the script by injecting the
-        /// recorded rawData sbytes into the game's input pipeline every tick.
-        ///
-        /// Known determinism limits: RewindToTick restores pos/rot/vel/angvel/camera/axes
-        /// only — FishNet internals, grounded latches and jump buffers are NOT restored,
-        /// so resims are most reliable from a grounded, low-velocity tick. Mid-macro RNG
-        /// state can't be restored either (only a full resim reseeds).
-        /// </summary>
-        public bool StartRobotResim(bool fromStart)
-        {
-            if (_macroSystem == null || !_macroSystem.HasRecordedData) return false;
-            if (_robotActive || _macroSystem.IsRecording || _macroSystem.IsEditMode) return false;
-
-            ulong cutTick;
-            if (fromStart)
-            {
-                cutTick = ulong.MaxValue;
-                foreach (var k in _macroSystem.RecordedInputs.Keys)
-                    if (k < cutTick) cutTick = k;
-                if (cutTick == ulong.MaxValue) return false;
-            }
-            else
-            {
-                cutTick = _macroSystem.GreenzoneEnd;
-            }
-
-            if (_macroSystem.GetStateAtTick(cutTick) == null)
-            {
-                TASPlugin.Logger.LogError($"TAS: Robot resim aborted — no recorded state at cut tick {cutTick}.");
-                return false;
-            }
-
-            // Copy the script BEFORE EnterEditMode truncates everything past the cut
-            _robotScript.Clear();
-            _robotEndTick = _macroSystem.MaxTick;
-            foreach (var kvp in _macroSystem.RecordedInputs)
-                if (kvp.Key > cutTick) _robotScript[kvp.Key] = kvp.Value;
-
-            if (_robotScript.Count == 0)
-            {
-                TASPlugin.Logger.LogInfo("TAS: Nothing to resimulate (greenzone already covers the whole macro).");
-                return false;
-            }
-
-            if (_macroSystem.IsPlaying) StopPlayback();
-
-            // Restore the player to the exact recorded state at the cut tick.
-            // Uses the macro's own data (not the savestate slot) — also fixes the
-            // bogus (0,0,0) teleport seen when the macro slot state was stale.
-            _cachedRb = _gameObjectFinder.GetCachedPlayerRigidbody();
-            RewindToTick(cutTick);
-
-            _robotCutTick = cutTick;
-            _robotStuckTicks = 0;
-            _robotPrevState = _macroSystem.GetStateAtTick(cutTick) ?? default;
-
-            // Full resim replays from tick 0 — equivalent to StartPlaying, so reseed the
-            // RNG the same way for any Random-driven game logic.
-            if (fromStart)
-                UnityEngine.Random.InitState(_macroSystem.RNGSeed);
-
-            // No truncation: the robot overwrites rows in place as it advances, so the
-            // user's input timeline never disappears (and survives an abort).
-            _macroSystem.BeginRobotRecording();
-            // Real devices must not pollute the injected inputs: mouse would drift the
-            // look axes, keyboard (WASD mid-resim) would overwrite the scripted rawData.
-            DisableMouseDevice();
-            DisableKeyboardDevice();
-            ApplyRobotSpeed();
-            _resimDiagCount = 0;
-            _robotActive = true;
-
-            if (_timeController.IsPaused) _timeController.TogglePause();
-
-            TASPlugin.Logger.LogInfo($"TAS: ROBOT RESIM started at tick {cutTick} → {_robotEndTick} ({_robotScript.Count} ticks, speed {RobotSpeed}x). Hands off the keyboard!");
-            return true;
-        }
-
-        /// <summary>Runs every FixedUpdate while the robot is active.</summary>
-        private void UpdateRobotResim()
-        {
-            // Edit mode got terminated externally (scene change, user F8, etc.)
-            if (!_macroSystem.IsEditMode)
-            {
-                StopRobotResim(completed: false);
-                return;
-            }
-
-            ulong tick = _timeController.CurrentTick;
-            if (tick > _robotEndTick)
-            {
-                StopRobotResim(completed: true);
-                return;
-            }
-
-            if (_robotScript.TryGetValue(tick, out var st))
-            {
-                // Input channel: write the script's exact recorded sbytes straight into
-                // the game's rawData — the only injection point that demonstrably drives
-                // the player outside playback mode (SendInput never reached this game's
-                // InputSystem; diagnostics showed gameMove=(0,0) with keys held).
-                InjectRawDataFromScript(st, _robotPrevState);
-                // Forcing pan/tilt and injecting look bytes are complementary, not in
-                // conflict: pan/tilt pins the start-of-tick camera to the recorded path
-                // while the look bytes reproduce the original intra-tick integration.
-                InjectAxesFromState(st);
-                LogRobotDiagnostics(tick, st);
-
-                // Stuck detection: script wants movement but the player hasn't moved for
-                // a full second → something froze the player. Abort losslessly instead of
-                // baking a dead run into the greenzone.
-                bool wantsMove = st.Move.sqrMagnitude > 0.09f;
-                bool stalled = _cachedRb != null && _cachedRb.linearVelocity.sqrMagnitude < 0.0004f;
-                if (wantsMove && stalled) _robotStuckTicks++;
-                else _robotStuckTicks = 0;
-
-                if (_robotStuckTicks >= 60)
-                {
-                    TASPlugin.Logger.LogError("TAS: ROBOT RESIM stuck — no movement for 60 ticks with input held. Restoring macro.");
-                    StopRobotResim(completed: false);
-                }
-
-                _robotPrevState = st;
-            }
-        }
-
-        /// <summary>
-        /// Writes the script inputs directly into PlayerInputHandler.rawData — the
-        /// input source the game's movement pipeline actually consumes.
-        /// </summary>
-        private void InjectRawDataFromScript(TASInputState st, TASInputState prev)
-        {
-            try
-            {
-                var playerTransform = _gameObjectFinder.FindPlayerTransform();
-                var handler = playerTransform?.GetComponent<EHS.PlayerInputHandler>();
-                if (handler == null) return;
-
-                var data = handler.rawData;
-
-                // Bit-identical to the original run: these are the exact sbytes the game
-                // consumed at record time, not a re-quantization of the float values.
-                data.moveInputSBytes = new EHS.Vector2SByte(st.MoveXRaw, st.MoveYRaw);
-                data.lookInputSBytes = new EHS.Vector2SByte(st.LookXRaw, st.LookYRaw);
-
-                var buttons = data.Buttons;
-
-                int held = buttons.HeldMask & ~(4 | 8);
-                if (st.Jump) held |= 4;
-                if (st.Interact) held |= 8;
-
-                int pressed = 0, released = 0;
-                if (st.Jump && !prev.Jump) pressed |= 4;
-                if (st.Interact && !prev.Interact) pressed |= 8;
-                if (!st.Jump && prev.Jump) released |= 4;
-                if (!st.Interact && prev.Interact) released |= 8;
-
-                buttons.HeldMask = held;
-                buttons.PressedThisUpdateMask = (buttons.PressedThisUpdateMask & ~(4 | 8)) | pressed;
-                buttons.PressedThisFixedUpdateMask = (buttons.PressedThisFixedUpdateMask & ~(4 | 8)) | pressed;
-                buttons.ReleasedThisUpdateMask = (buttons.ReleasedThisUpdateMask & ~(4 | 8)) | released;
-                buttons.ReleasedThisFixedUpdateMask = (buttons.ReleasedThisFixedUpdateMask & ~(4 | 8)) | released;
-
-                data.Buttons = buttons;
-                handler.rawData = data;
-            }
-            catch (Exception ex)
-            {
-                TASPlugin.Logger.LogError($"Error injecting robot rawData: {ex}");
-            }
-        }
-
-        public void StopRobotResim(bool completed)
-        {
-            if (!_robotActive) return;
-            _robotActive = false;
-            ClearRawInputData(); // don't leave the last injected input driving the player
-            EnableMouseDevice();
-            EnableKeyboardDevice();
-            RestoreRobotSpeed();
-
-            if (_macroSystem.IsEditMode)
-                _macroSystem.ExitEditMode();
-
-            if (completed)
-            {
-                TASPlugin.Logger.LogInfo($"TAS: ROBOT RESIM completed — greenzone now ends at {_macroSystem.GreenzoneEnd}.");
-                _robotScript.Clear();
-            }
-            else
-            {
-                // Lossless abort: put the macro back exactly as it was before the resim
-                RestoreMacroFromScript();
-                _robotScript.Clear();
-                TASPlugin.Logger.LogInfo($"TAS: ROBOT RESIM aborted — macro restored (greenzone back at {_macroSystem.GreenzoneEnd}).");
-            }
-
-            // Pause so the user can inspect the result in the editor
-            if (!_timeController.IsPaused) _timeController.TogglePause();
-        }
-
-        /// <summary>Reverts the macro to its exact pre-resim contents (rows + greenzone).</summary>
-        private void RestoreMacroFromScript()
-        {
-            foreach (var kvp in _robotScript)
-                _macroSystem.RecordedInputs[kvp.Key] = kvp.Value;
-            if (_macroSystem.GreenzoneEnd > _robotCutTick)
-                _macroSystem.GreenzoneEnd = _robotCutTick;
-        }
-
-
-        private void ApplyRobotSpeed()
-        {
-            if (RobotSpeed >= 0.99f) return;
-            if (!_timeController.IsSlowMo) _timeController.ToggleSlowMo();      // ×0.1
-            _timeController.SetSlowMoBoost(RobotSpeed > 0.2f);                  // ×0.3 if boosted
-        }
-
-        private void RestoreRobotSpeed()
-        {
-            if (_timeController.IsSlowMo) _timeController.ToggleSlowMo();
-        }
-
-        private void DisableMouseDevice()
-        {
-            try
-            {
-                if (UnityEngine.InputSystem.Mouse.current != null)
-                    UnityEngine.InputSystem.InputSystem.DisableDevice(UnityEngine.InputSystem.Mouse.current);
-            }
-            catch { }
-        }
-
-        private void EnableMouseDevice()
-        {
-            try
-            {
-                if (UnityEngine.InputSystem.Mouse.current != null)
-                    UnityEngine.InputSystem.InputSystem.EnableDevice(UnityEngine.InputSystem.Mouse.current);
-            }
-            catch { }
-        }
-
-        private void DisableKeyboardDevice()
-        {
-            try
-            {
-                if (UnityEngine.InputSystem.Keyboard.current != null)
-                    UnityEngine.InputSystem.InputSystem.DisableDevice(UnityEngine.InputSystem.Keyboard.current);
-            }
-            catch { }
-        }
-
-        private void EnableKeyboardDevice()
-        {
-            try
-            {
-                if (UnityEngine.InputSystem.Keyboard.current != null)
-                    UnityEngine.InputSystem.InputSystem.EnableDevice(UnityEngine.InputSystem.Keyboard.current);
-            }
-            catch { }
-        }
-
-        private int _resimDiagCount = 0;
-
-        /// <summary>
-        /// Logs robot resim health (injected inputs, position, velocity, game flags) —
-        /// first ticks and then once per second.
-        /// </summary>
-        private void LogRobotDiagnostics(ulong tick, TASInputState st)
-        {
-            _resimDiagCount++;
-            if (_resimDiagCount > 5 && _resimDiagCount % 60 != 0) return;
-
-            try
-            {
-                string inj = $"move=({st.MoveXRaw},{st.MoveYRaw}) look=({st.LookXRaw},{st.LookYRaw}){(st.Jump ? " J" : "")}{(st.Interact ? " I" : "")}";
-                string rbStr = _cachedRb != null
-                    ? $"pos={_cachedRb.position} vel={_cachedRb.linearVelocity} kin={_cachedRb.isKinematic}"
-                    : "rb=null";
-                bool gamePaused = false, gameEnded = false, summoned = false;
-                try
-                {
-                    gamePaused = EHS.GameManager.IsGamePaused;
-                    gameEnded = EHS.GameManager.IsGameEnded;
-                    summoned = EHS.GameManager.IsBeingSummoned;
-                }
-                catch { }
-
-                // GameInputPatch doesn't intercept while the robot runs (IsPlaying=false),
-                // so this is the input the game ACTUALLY sees. keys=[W] with gameMove=(0,0)
-                // means the held key got lost; gameMove=(0,1) with no motion means the game
-                // itself is freezing the player (summon/checkpoint/etc).
-                string gameMove = "?";
-                try
-                {
-                    var handler = _gameObjectFinder.FindPlayerTransform()?.GetComponent<EHS.PlayerInputHandler>();
-                    if (handler != null) gameMove = handler.MoveInput.ToString();
-                }
-                catch { }
-
-                // Drift vs the original run: distance between the live rigidbody and the
-                // position recorded at this tick. Growing past ~0.05 within the first
-                // ~100 ticks means the resim is desyncing.
-                string drift = _cachedRb != null
-                    ? $" drift={Vector3.Distance(_cachedRb.position, st.PlayerPosition):F3}"
-                    : "";
-
-                TASPlugin.Logger.LogInfo($"TAS ROBOT t={tick} inj[{inj}] gameMove={gameMove} {rbStr}{drift} gamePaused={gamePaused} gameEnded={gameEnded} summoned={summoned}");
-            }
-            catch (Exception ex)
-            {
-                TASPlugin.Logger.LogError($"Robot diag error: {ex}");
             }
         }
 
@@ -818,23 +446,6 @@ namespace FlippingIsHardTAS
         
         private bool _wasGameEnded = false;
 
-        // ===== Robot resim state =====
-        // Resimulation = automated Edit Mode: playback freezes the player in this game
-        // (native FishNet pipeline), but recording mode (F8) gives control back. The
-        // robot replays the edited inputs by injecting the recorded rawData sbytes each
-        // tick while the proven recording path re-captures the real state, regenerating
-        // the greenzone.
-        private bool _robotActive = false;
-        private ulong _robotEndTick = 0;
-        private ulong _robotCutTick = 0;
-        private int _robotStuckTicks = 0;
-        // Previous script state — needed for clean pressed/released button edges
-        private TASInputState _robotPrevState;
-        private readonly System.Collections.Generic.Dictionary<ulong, TASInputState> _robotScript
-            = new System.Collections.Generic.Dictionary<ulong, TASInputState>();
-        public bool IsRobotActive => _robotActive;
-        public float RobotSpeed { get; set; } = 1f; // 1, 0.3 or 0.1 — applied at robot start
-        
         private void CheckGameEnd()
         {
             try
@@ -846,8 +457,6 @@ namespace FlippingIsHardTAS
                     _wasGameEnded = true;
                     bool wasRecording = _macroSystem.IsRecording;
 
-                    if (_robotActive)
-                        StopRobotResim(completed: true); // run finished during resim — result is valid
                     if (_macroSystem.IsPlaying)
                         StopPlayback();
                     if (_macroSystem.IsRecording)
@@ -866,19 +475,6 @@ namespace FlippingIsHardTAS
         private void HandleHotkeys()
         {
             if (TASBindMenuRenderer.IsVisibleGlobally) return;
-
-            // While the robot is replaying, only allow aborting via the EditMacro key
-            // (F8) — everything else is blocked so stray keypresses can't trigger TAS
-            // hotkeys mid-resim. (Legacy Input still sees keys while the InputSystem
-            // keyboard device is disabled — they're separate backends.)
-            if (_robotActive)
-            {
-                bool isAbortPressed = TASConfig.Settings.EditMacro.IsPressed();
-                if (isAbortPressed && !_wasEditModePressed)
-                    StopRobotResim(completed: false);
-                _wasEditModePressed = isAbortPressed;
-                return;
-            }
 
             // While typing in an editor text field, swallow ALL hotkeys (including the
             // editor toggle) so e.g. pressing the bound letter doesn't close the window.
@@ -1135,14 +731,13 @@ namespace FlippingIsHardTAS
         }
 
         /// <summary>
-        /// Starts greenzone playback from the macro start (same as the Play hotkey).
-        /// Playback auto-pauses at the greenzone end; resimulation past it is the
-        /// robot's job (StartRobotResim).
+        /// Starts greenzone playback from the macro start (same as the Play hotkey) — the
+        /// bit-perfect replay (state injection per tick). This is what the editor's Play does.
         /// </summary>
         public bool EditorPlayFromStart()
         {
             if (_macroSystem == null || !_macroSystem.HasRecordedData) return false;
-            if (_macroSystem.IsPlaying || _macroSystem.IsRecording || _macroSystem.IsEditMode || _robotActive) return false;
+            if (_macroSystem.IsPlaying || _macroSystem.IsRecording || _macroSystem.IsEditMode) return false;
 
             _savestateSystem.LoadState(_gameObjectFinder, _timeController, true);
             Physics.SyncTransforms();
@@ -1355,7 +950,7 @@ namespace FlippingIsHardTAS
             }
             catch { }
         }
-        
+
         private void InjectAxesFromState(TASInputState state)
         {
             try
@@ -1519,7 +1114,6 @@ namespace FlippingIsHardTAS
         {
             try
             {
-                StopRobotResim(completed: false);
                 UnsubscribeFromFishNet();
                 ToggleCinemachine(true);
             }

@@ -243,15 +243,9 @@ namespace FlippingIsHardTAS
             DrawKeySingle(cx, ref cy, $"[{s.EditMacro}] Edit Macro",
                 _isEditMode ? new Color(1f, 0.5f, 0f) : _dimColor, ctrlW, lineH);
             if (_maxTick > 0)
-            {
-                bool gzComplete = _greenzoneEnd >= _maxTick;
-                DrawKeySingle(cx, ref cy, $"Greenzone: {_greenzoneEnd} / {_maxTick}",
-                    gzComplete ? _savedColor : _dimColor, ctrlW, lineH);
-            }
+                DrawKeySingle(cx, ref cy, $"Recorded: {_maxTick} ticks", _savedColor, ctrlW, lineH);
             else
-            {
-                DrawKeySingle(cx, ref cy, "Greenzone: —", _dimColor, ctrlW, lineH);
-            }
+                DrawKeySingle(cx, ref cy, "Recorded: —", _dimColor, ctrlW, lineH);
 
             // ── Playback Controls ──
             DrawSectionLabel(cx, ref cy, "PLAYBACK CONTROLS", ctrlW, lineH);

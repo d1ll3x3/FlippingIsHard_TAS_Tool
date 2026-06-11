@@ -5,9 +5,10 @@ namespace FlippingIsHardTAS
 {
     /// <summary>
     /// Frame-by-frame macro editor ("piano roll"), in the spirit of TAS Studio / libTAS.
-    /// Shows one row per physics tick with the recorded inputs; cells can be edited.
-    /// Rows inside the greenzone (valid physics state) are tinted green; rows past it
-    /// are stale and need a playback pass (resimulation) to become valid again.
+    /// Works on the bit-perfect replay (state injection — no resimulation): Play/scrub/step
+    /// reproduce the recorded states exactly. Timeline surgery (insert/delete/paste/trim)
+    /// changes what plays back; per-cell input edits are data-only — to change a run's
+    /// physics, re-record live from a chosen tick.
     /// </summary>
     public class TASEditorRenderer
     {
@@ -161,15 +162,9 @@ namespace FlippingIsHardTAS
             _backupDone = false;
         }
 
-        private bool EditingLocked()
-        {
-            if (_controller.IsRobotActive)
-            {
-                SetStatus("Robot resim running — wait for it to finish or press STOP.");
-                return true;
-            }
-            return false;
-        }
+        // No resim anymore — timeline editing is always allowed. Kept as a single
+        // gate point in case we want to block edits during live recording later.
+        private bool EditingLocked() => false;
 
         private void BackupMacroOnce(InputMacroSystem macro)
         {
@@ -220,7 +215,7 @@ namespace FlippingIsHardTAS
             // EXCEPT during active (unpaused) playback: the game gates gameplay input on
             // the cursor being locked, so forcing it unlocked would freeze the player.
             var macroSys = _controller.MacroSystem;
-            bool activePlayback = (macroSys != null && macroSys.IsPlaying || _controller.IsRobotActive)
+            bool activePlayback = macroSys != null && macroSys.IsPlaying
                                   && !_controller.EditorIsPaused;
             if (!activePlayback)
             {
@@ -231,7 +226,7 @@ namespace FlippingIsHardTAS
             InitStyles();
 
             if (_followPlayback && _controller.MacroSystem != null
-                && (_controller.MacroSystem.IsPlaying || _controller.IsRobotActive))
+                && _controller.MacroSystem.IsPlaying)
                 CenterOn(_controller.EditorCurrentTick);
 
             if (Event.current.type == EventType.Repaint)
@@ -391,7 +386,7 @@ namespace FlippingIsHardTAS
             // ── Toolbar ──
             ulong curTick = _controller.EditorCurrentTick;
             GUI.Label(new Rect(x, y, 420, 20),
-                $"Ticks: {macro.MaxTick}   Greenzone: {macro.GreenzoneEnd}   Current: {curTick}" +
+                $"Ticks: {macro.MaxTick}   Current: {curTick}" +
                 (macro.IsPlaying ? "   [PLAYING]" : ""));
 
             GUI.backgroundColor = _followPlayback ? new Color(0.2f, 0.9f, 0.4f) : Color.white;
@@ -400,91 +395,40 @@ namespace FlippingIsHardTAS
             GUI.backgroundColor = Color.white;
             y += 24;
 
-            bool robotActive = _controller.IsRobotActive;
-
-            if (robotActive)
+            // ── Toolbar row 1: playback (bit-perfect replay) ──
+            if (CustomButton(new Rect(x, y, 60, 22), macro.IsPlaying ? "Stop" : "Play"))
             {
-                GUI.backgroundColor = new Color(0.9f, 0.3f, 0.2f);
-                if (CustomButton(new Rect(x, y, 70, 22), "STOP"))
-                    _controller.StopRobotResim(completed: false);
-                GUI.backgroundColor = Color.white;
-                if (CustomButton(new Rect(x + 76, y, 90, 22), _controller.EditorIsPaused ? "Resume" : "Pause"))
-                    _controller.EditorTogglePause();
-                GUI.color = new Color(1f, 0.6f, 0.2f);
-                GUI.Label(new Rect(x + 176, y, 380, 22), "ROBOT RESIM — HANDS OFF THE KEYBOARD!", _styleHeader);
-                GUI.color = Color.white;
-                y += 30;
-            }
-            else
-            {
-                if (CustomButton(new Rect(x, y, 60, 22), macro.IsPlaying ? "Stop" : "Play"))
-                {
-                    if (macro.IsPlaying) _controller.EditorStopPlayback();
-                    else
-                    {
-                        BackupMacroOnce(macro);
-                        if (!_controller.EditorPlayFromStart()) SetStatus("Could not start playback.");
-                    }
-                }
-                if (CustomButton(new Rect(x + 66, y, 70, 22), "Resim"))
+                if (macro.IsPlaying) _controller.EditorStopPlayback();
+                else
                 {
                     BackupMacroOnce(macro);
-                    PushUndo(macro);
-                    if (_controller.StartRobotResim(fromStart: false))
-                        SetStatus("Robot resim from greenzone end — hands off the keyboard!");
-                    else
-                    {
-                        PopUndoDiscard();
-                        SetStatus("Nothing to resim (or busy) — edit an input first.");
-                    }
+                    if (!_controller.EditorPlayFromStart()) SetStatus("Could not start playback.");
                 }
-                if (CustomButton(new Rect(x + 142, y, 90, 22), "Full Resim"))
-                {
-                    BackupMacroOnce(macro);
-                    PushUndo(macro);
-                    if (_controller.StartRobotResim(fromStart: true))
-                        SetStatus("Robot resim of the whole macro — hands off the keyboard!");
-                    else
-                    {
-                        PopUndoDiscard();
-                        SetStatus("Could not start full resim.");
-                    }
-                }
-                if (CustomButton(new Rect(x + 238, y, 90, 22), $"Speed: {_controller.RobotSpeed:0.#}x"))
-                {
-                    // Cycle 1x → 0.3x → 0.1x (slower = more accurate key timing)
-                    _controller.RobotSpeed = _controller.RobotSpeed >= 0.99f ? 0.3f
-                                           : _controller.RobotSpeed >= 0.25f ? 0.1f : 1f;
-                }
-                if (CustomButton(new Rect(x + 334, y, 95, 22), "Go to current"))
-                    CenterOn(curTick);
-                if (CustomButton(new Rect(x + 435, y, 70, 22), _controller.EditorIsPaused ? "Resume" : "Pause"))
-                    _controller.EditorTogglePause();
-                y += 28;
-
-                // ── Toolbar row 2: edit operations ──
-                if (CustomButton(new Rect(x, y, 60, 22), "Undo"))
-                {
-                    if (!EditingLocked()) DoUndo(macro);
-                }
-                if (CustomButton(new Rect(x + 66, y, 60, 22), "Redo"))
-                {
-                    if (!EditingLocked()) DoRedo(macro);
-                }
-                if (CustomButton(new Rect(x + 132, y, 36, 22), "<"))
-                    _controller.EditorStepBack();
-                if (CustomButton(new Rect(x + 174, y, 36, 22), ">"))
-                    _controller.EditorStepForward();
-                if (CustomButton(new Rect(x + 216, y, 70, 22), "Insert"))
-                    InsertAtSelection(macro);
-                if (CustomButton(new Rect(x + 292, y, 70, 22), "Delete"))
-                    DeleteAtSelection(macro);
-                if (CustomButton(new Rect(x + 368, y, 60, 22), "Copy"))
-                    CopyRange(macro);
-                if (CustomButton(new Rect(x + 434, y, 95, 22), "Paste @ sel"))
-                    PasteAtSelection(macro);
-                y += 30;
             }
+            if (CustomButton(new Rect(x + 66, y, 70, 22), _controller.EditorIsPaused ? "Resume" : "Pause"))
+                _controller.EditorTogglePause();
+            if (CustomButton(new Rect(x + 142, y, 36, 22), "<"))
+                _controller.EditorStepBack();
+            if (CustomButton(new Rect(x + 184, y, 36, 22), ">"))
+                _controller.EditorStepForward();
+            if (CustomButton(new Rect(x + 226, y, 95, 22), "Go to current"))
+                CenterOn(curTick);
+            y += 28;
+
+            // ── Toolbar row 2: timeline editing ──
+            if (CustomButton(new Rect(x, y, 60, 22), "Undo"))
+                DoUndo(macro);
+            if (CustomButton(new Rect(x + 66, y, 60, 22), "Redo"))
+                DoRedo(macro);
+            if (CustomButton(new Rect(x + 132, y, 70, 22), "Insert"))
+                InsertAtSelection(macro);
+            if (CustomButton(new Rect(x + 208, y, 70, 22), "Delete"))
+                DeleteAtSelection(macro);
+            if (CustomButton(new Rect(x + 284, y, 60, 22), "Copy"))
+                CopyRange(macro);
+            if (CustomButton(new Rect(x + 350, y, 95, 22), "Paste @ sel"))
+                PasteAtSelection(macro);
+            y += 30;
 
             // ── Header row ──
             float cx = x;
@@ -547,11 +491,11 @@ namespace FlippingIsHardTAS
         {
             var stateOpt = macro.GetStateAtTick(tick);
 
-            // Row background: current tick > greenzone > stale
+            // Row background: current tick highlighted red; recorded rows tinted green.
             Color bg;
-            if (tick == curTick)            bg = new Color(0.85f, 0.25f, 0.25f, 0.45f);
-            else if (tick <= macro.GreenzoneEnd) bg = new Color(0.15f, 0.5f, 0.2f, 0.30f);
-            else                            bg = new Color(0.4f, 0.4f, 0.4f, 0.20f);
+            if (tick == curTick)        bg = new Color(0.85f, 0.25f, 0.25f, 0.45f);
+            else if (stateOpt != null)  bg = new Color(0.15f, 0.5f, 0.2f, 0.30f);
+            else                        bg = new Color(0.4f, 0.4f, 0.4f, 0.20f);
             if ((long)tick == _selectedTick) bg.a += 0.25f;
 
             float totalW = 0f;
@@ -569,13 +513,9 @@ namespace FlippingIsHardTAS
                 _selectedTick = (long)tick;
                 LoadSelectionIntoFields();
                 _followPlayback = false;
-                if (tick <= macro.GreenzoneEnd)
-                {
-                    if (!_controller.SeekToTick(tick))
-                        SetStatus($"Could not seek to tick {tick}.");
-                }
-                else
-                    SetStatus("Tick is past the greenzone — use Play/Resim to regenerate state.");
+                // Every recorded tick has a valid state (no resim), so any tick is seekable.
+                if (!_controller.SeekToTick(tick))
+                    SetStatus($"Could not seek to tick {tick}.");
             }
             cx += ColW[0];
 
@@ -685,7 +625,7 @@ namespace FlippingIsHardTAS
                                  s.CameraPan, s.CameraTilt);
                 applied++;
             }
-            SetStatus($"Applied to {applied} ticks ({from}–{to}). Greenzone cut at {macro.GreenzoneEnd}.");
+            SetStatus($"Applied J/I to {applied} ticks ({from}–{to}). Data only — re-record to change the run.");
         }
 
         private void InsertAtSelection(InputMacroSystem macro)
@@ -695,7 +635,7 @@ namespace FlippingIsHardTAS
             BackupMacroOnce(macro);
             PushUndo(macro);
             macro.InsertTickAt((ulong)_selectedTick);
-            SetStatus($"Frame inserted at {_selectedTick} — later frames shifted +1, greenzone cut at {macro.GreenzoneEnd}.");
+            SetStatus($"Frame inserted at {_selectedTick} — later frames shifted +1 (MaxTick {macro.MaxTick}).");
         }
 
         private void DeleteAtSelection(InputMacroSystem macro)
@@ -707,7 +647,7 @@ namespace FlippingIsHardTAS
             macro.DeleteTickAt((ulong)_selectedTick);
             if ((ulong)_selectedTick > macro.MaxTick) _selectedTick = (long)macro.MaxTick;
             LoadSelectionIntoFields();
-            SetStatus($"Frame {_selectedTick} deleted — later frames shifted -1, greenzone cut at {macro.GreenzoneEnd}.");
+            SetStatus($"Frame {_selectedTick} deleted — later frames shifted -1 (MaxTick {macro.MaxTick}).");
         }
 
         private void CopyRange(InputMacroSystem macro)
@@ -740,11 +680,12 @@ namespace FlippingIsHardTAS
             {
                 ulong target = (ulong)_selectedTick + kvp.Key;
                 if (target > macro.MaxTick) break;
-                var src = kvp.Value;
-                macro.SetInputAt(target, src.Move, src.Jump, src.Interact, src.CameraPan, src.CameraTilt);
+                // Full-state paste = timeline surgery: the replay reproduces the pasted
+                // segment's real trajectory (with a position seam at the boundary).
+                macro.SetFullStateAt(target, kvp.Value);
                 pasted++;
             }
-            SetStatus($"Pasted {pasted} frames at {_selectedTick} — greenzone cut at {macro.GreenzoneEnd}.");
+            SetStatus($"Pasted {pasted} frames at {_selectedTick} (full state — may seam at the boundary).");
         }
 
         private void DrawFileSection(InputMacroSystem macro, float x, ref float y)
@@ -827,7 +768,7 @@ namespace FlippingIsHardTAS
             BackupMacroOnce(macro);
             PushUndo(macro);
             macro.SetInputAt((ulong)_selectedTick, new Vector2(mx, my), s.Jump, s.Interact, pan, tilt);
-            SetStatus($"Tick {_selectedTick} edited. Greenzone cut at {macro.GreenzoneEnd}.");
+            SetStatus($"Tick {_selectedTick} inputs edited (data only — re-record from here to change the run).");
         }
 
         private static bool TryParseFloat(string str, out float value)
