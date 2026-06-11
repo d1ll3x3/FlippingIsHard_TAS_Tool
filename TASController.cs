@@ -398,7 +398,18 @@ namespace FlippingIsHardTAS
             try
             {
                 if (!enabled || !_isInGame) return;
-                if (_macroSystem == null || !_macroSystem.IsPlaying) return;
+                if (_macroSystem == null) return;
+
+                // Robot resim: refresh the injected inputs right before the game
+                // processes the tick, in case anything reset rawData since FixedUpdate.
+                if (_robotActive)
+                {
+                    if (_robotScript.TryGetValue(_timeController.CurrentTick, out var st))
+                        InjectRawDataFromScript(st, _robotPrevState);
+                    return;
+                }
+
+                if (!_macroSystem.IsPlaying) return;
                 InjectRawInputData();
             }
             catch (Exception ex)
@@ -495,6 +506,7 @@ namespace FlippingIsHardTAS
             _robotCutTick = cutTick;
             _robotStuckTicks = 0;
             _hasUndoableResim = false;
+            _robotPrevState = _macroSystem.GetStateAtTick(cutTick) ?? default;
 
             // No truncation: the robot overwrites rows in place as it advances, so the
             // user's input timeline never disappears (and survives an abort).
@@ -529,6 +541,12 @@ namespace FlippingIsHardTAS
 
             if (_robotScript.TryGetValue(tick, out var st))
             {
+                // Primary input channel: write the script inputs straight into the
+                // game's rawData. SendInput keys never reach this game's InputSystem
+                // (diagnostics showed gameMove=(0,0) with keys held), but rawData
+                // writes demonstrably drive the player outside playback mode — the
+                // old "leftover input keeps moving the player after stop" proved it.
+                InjectRawDataFromScript(st, _robotPrevState);
                 DriveOSKeysFromState(st);
                 InjectAxesFromState(st); // keep camera pan/tilt on the recorded path
                 LogRobotDiagnostics(tick);
@@ -546,6 +564,56 @@ namespace FlippingIsHardTAS
                     TASPlugin.Logger.LogError("TAS: ROBOT RESIM stuck — no movement for 60 ticks with input held. Restoring macro.");
                     StopRobotResim(completed: false);
                 }
+
+                _robotPrevState = st;
+            }
+        }
+
+        /// <summary>
+        /// Writes the script inputs directly into PlayerInputHandler.rawData — the
+        /// input source the game's movement pipeline actually consumes.
+        /// </summary>
+        private void InjectRawDataFromScript(TASInputState st, TASInputState prev)
+        {
+            try
+            {
+                var playerTransform = _gameObjectFinder.FindPlayerTransform();
+                var handler = playerTransform?.GetComponent<EHS.PlayerInputHandler>();
+                if (handler == null) return;
+
+                var data = handler.rawData;
+
+                data.moveInputSBytes = new EHS.Vector2SByte(
+                    (sbyte)Mathf.RoundToInt(Mathf.Clamp(st.Move.x, -1f, 1f) * 127f),
+                    (sbyte)Mathf.RoundToInt(Mathf.Clamp(st.Move.y, -1f, 1f) * 127f));
+                data.lookInputSBytes = new EHS.Vector2SByte(
+                    (sbyte)Mathf.RoundToInt(Mathf.Clamp(st.Look.x, -1f, 1f) * 127f),
+                    (sbyte)Mathf.RoundToInt(Mathf.Clamp(st.Look.y, -1f, 1f) * 127f));
+
+                var buttons = data.Buttons;
+
+                int held = buttons.HeldMask & ~(4 | 8);
+                if (st.Jump) held |= 4;
+                if (st.Interact) held |= 8;
+
+                int pressed = 0, released = 0;
+                if (st.Jump && !prev.Jump) pressed |= 4;
+                if (st.Interact && !prev.Interact) pressed |= 8;
+                if (!st.Jump && prev.Jump) released |= 4;
+                if (!st.Interact && prev.Interact) released |= 8;
+
+                buttons.HeldMask = held;
+                buttons.PressedThisUpdateMask = (buttons.PressedThisUpdateMask & ~(4 | 8)) | pressed;
+                buttons.PressedThisFixedUpdateMask = (buttons.PressedThisFixedUpdateMask & ~(4 | 8)) | pressed;
+                buttons.ReleasedThisUpdateMask = (buttons.ReleasedThisUpdateMask & ~(4 | 8)) | released;
+                buttons.ReleasedThisFixedUpdateMask = (buttons.ReleasedThisFixedUpdateMask & ~(4 | 8)) | released;
+
+                data.Buttons = buttons;
+                handler.rawData = data;
+            }
+            catch (Exception ex)
+            {
+                TASPlugin.Logger.LogError($"Error injecting robot rawData: {ex}");
             }
         }
 
@@ -554,6 +622,7 @@ namespace FlippingIsHardTAS
             if (!_robotActive) return;
             _robotActive = false;
             ReleaseOSKeys();
+            ClearRawInputData(); // don't leave the last injected input driving the player
             EnableMouseDevice();
             RestoreRobotSpeed();
 
@@ -801,6 +870,8 @@ namespace FlippingIsHardTAS
         private ulong _robotCutTick = 0;
         private int _robotStuckTicks = 0;
         private bool _hasUndoableResim = false;
+        // Previous script state — needed for clean pressed/released button edges
+        private TASInputState _robotPrevState;
         private readonly System.Collections.Generic.Dictionary<ulong, TASInputState> _robotScript
             = new System.Collections.Generic.Dictionary<ulong, TASInputState>();
         public bool IsRobotActive => _robotActive;
