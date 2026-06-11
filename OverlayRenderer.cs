@@ -52,12 +52,12 @@ namespace FlippingIsHardTAS
         private float _cachedScale = -1f;
 
         private ulong _greenzoneEnd = 0;
-        private ulong _maxTick = 0;
+        private ulong _recordedCount = 0;   // number of valid recorded ticks (no-data excluded)
 
         public void UpdateData(Vector3 pos, float speed, bool hasSaved, bool isRecording,
                                bool isPlaying, bool isPaused, ulong currentTick,
                                bool isSlowMo = false, bool isSlowMoBoost = false, bool isFastForward = false, bool isEditMode = false,
-                               ulong greenzoneEnd = 0, ulong maxTick = 0)
+                               ulong greenzoneEnd = 0, ulong recordedCount = 0)
         {
             if (_cachedCoords == null || Vector3.Distance(_currentPosition, pos) > 0.05f)
             {
@@ -83,7 +83,7 @@ namespace FlippingIsHardTAS
             _isFastForward    = isFastForward;
             _currentTick      = currentTick;
             _greenzoneEnd     = greenzoneEnd;
-            _maxTick          = maxTick;
+            _recordedCount    = recordedCount;
             _showOverlay      = Application.isFocused;
         }
 
@@ -152,9 +152,10 @@ namespace FlippingIsHardTAS
             float ctrlW = BASE_CTRL_W * sc;
             float pad = BASE_PAD;
             float totalH = 35f * sc  // header + tick + state
+                         + lineH * 2             // Recorded + Reset Tick (under the tick counter)
                          + sectionH + lineH * 2  // savestate section
-                         + sectionH + lineH * 6  // macro section
-                         + sectionH + lineH * 4  // playback section
+                         + sectionH + lineH * 3  // macro section (Record, Play, Edit)
+                         + sectionH + lineH * 5  // playback section (Pause, FrameAdv, Rewind, FastFwd, SlowMo)
                          + sectionH + lineH * 2   // ui section
                          + 14f * sc;              // padding
 
@@ -226,6 +227,13 @@ namespace FlippingIsHardTAS
             GUI.Label(new Rect(cx + 180f * sc, cy, ctrlW - 200f * sc, 20f * sc), stateStr, _styleText);
             cy += lineH;
 
+            // Recorded + Reset Tick: right under the tick counter (per user request)
+            if (_recordedCount > 0)
+                DrawKeySingle(cx, ref cy, $"Recorded: {_recordedCount} ticks", _savedColor, ctrlW, lineH);
+            else
+                DrawKeySingle(cx, ref cy, "Recorded: —", _dimColor, ctrlW, lineH);
+            DrawKeySingle(cx, ref cy, $"[{s.ResetTick}] Reset Tick", _dimColor, ctrlW, lineH);
+
             // ── Savestate ──
             DrawSectionLabel(cx, ref cy, "SAVESTATE", ctrlW, lineH);
             DrawKeyRow(cx, ref cy, $"[{s.SavePosition}] Save", $"[{s.Teleport}] Load",
@@ -237,15 +245,8 @@ namespace FlippingIsHardTAS
                 _isRecording ? _recColor : (_isPlaying ? new Color(0.6f, 0.2f, 0.2f) : _dimColor), ctrlW, lineH);
             DrawKeySingle(cx, ref cy, $"[{s.PlayMacro}] Play / Stop",
                 _isEditMode || _isRecording ? new Color(0.6f, 0.2f, 0.2f) : (_isPlaying ? _playColor : _dimColor), ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.ResetTick}] Reset Tick", _dimColor, ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.FastForward}] Fast Forward ×3",
-                _isFastForward ? new Color(0.2f, 0.8f, 1f) : _dimColor, ctrlW, lineH);
             DrawKeySingle(cx, ref cy, $"[{s.EditMacro}] Edit Macro",
                 _isEditMode ? new Color(1f, 0.5f, 0f) : _dimColor, ctrlW, lineH);
-            if (_maxTick > 0)
-                DrawKeySingle(cx, ref cy, $"Recorded: {_maxTick} ticks", _savedColor, ctrlW, lineH);
-            else
-                DrawKeySingle(cx, ref cy, "Recorded: —", _dimColor, ctrlW, lineH);
 
             // ── Playback Controls ──
             DrawSectionLabel(cx, ref cy, "PLAYBACK CONTROLS", ctrlW, lineH);
@@ -255,6 +256,8 @@ namespace FlippingIsHardTAS
                 _isPaused ? _keyColor : _dimColor, ctrlW, lineH);
             DrawKeySingle(cx, ref cy, $"[{s.RewindTick}] Rewind Tick  (hold = 10/s)",
                 _isEditMode ? new Color(0.6f, 0.2f, 0.2f) : (_isPaused ? _keyColor : _dimColor), ctrlW, lineH);
+            DrawKeySingle(cx, ref cy, $"[{s.FastForward}] Fast Forward ×3",
+                _isFastForward ? new Color(0.2f, 0.8f, 1f) : _dimColor, ctrlW, lineH);
             DrawKeySingle(cx, ref cy, $"[{s.SlowMo}] Slow Motion (×0.1)",
                 _isSlowMo ? _playColor : _dimColor, ctrlW, lineH);
             if (_isSlowMo)

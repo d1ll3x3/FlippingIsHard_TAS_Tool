@@ -211,13 +211,15 @@ namespace FlippingIsHardTAS
         {
             if (!_isVisible) return;
 
-            // Keep the cursor usable while editing — the game re-locks it every frame.
-            // EXCEPT during active (unpaused) playback: the game gates gameplay input on
-            // the cursor being locked, so forcing it unlocked would freeze the player.
+            // Keep the cursor free (to use the editor) — the game re-locks it every frame.
+            // EXCEPT during live recording/Edit Mode (unpaused): then the cursor must stay
+            // locked so the mouse drives the camera. During replay the cursor stays free
+            // (the camera is replayed, not mouse-driven), so you can keep editing.
             var macroSys = _controller.MacroSystem;
-            bool activePlayback = macroSys != null && macroSys.IsPlaying
-                                  && !_controller.EditorIsPaused;
-            if (!activePlayback)
+            bool liveDriving = macroSys != null
+                               && (macroSys.IsRecording || macroSys.IsEditMode)
+                               && !_controller.EditorIsPaused;
+            if (!liveDriving)
             {
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
@@ -225,8 +227,8 @@ namespace FlippingIsHardTAS
 
             InitStyles();
 
-            if (_followPlayback && _controller.MacroSystem != null
-                && _controller.MacroSystem.IsPlaying)
+            if (_followPlayback && macroSys != null
+                && (macroSys.IsPlaying || macroSys.IsRecording || macroSys.IsEditMode))
                 CenterOn(_controller.EditorCurrentTick);
 
             if (Event.current.type == EventType.Repaint)
@@ -413,6 +415,19 @@ namespace FlippingIsHardTAS
                 _controller.EditorStepForward();
             if (CustomButton(new Rect(x + 226, y, 95, 22), "Go to current"))
                 CenterOn(curTick);
+            // Enter live Edit Mode at the selected tick (or current) and close the editor so
+            // the cursor locks and the mouse drives the camera in-game.
+            GUI.backgroundColor = new Color(1f, 0.6f, 0.2f);
+            if (CustomButton(new Rect(x + 331, y, 90, 22), "Edit here"))
+            {
+                ulong at = _selectedTick >= 0 ? (ulong)_selectedTick : curTick;
+                BackupMacroOnce(macro);
+                if (_controller.EditorEnterEditModeAt(at))
+                    ForceClose();
+                else
+                    SetStatus("Can't enter edit mode here (busy or no data at tick).");
+            }
+            GUI.backgroundColor = Color.white;
             y += 28;
 
             // ── Toolbar row 2: timeline editing ──
@@ -671,21 +686,23 @@ namespace FlippingIsHardTAS
         {
             if (EditingLocked()) return;
             if (_clipboard.Count == 0) { SetStatus("Clipboard empty — use Copy first."); return; }
-            if (_selectedTick < 0) { SetStatus("Select a target tick first (click its number)."); return; }
+            // Fall back to the current tick if nothing is selected (same as "Edit here").
+            ulong at = _selectedTick >= 0 ? (ulong)_selectedTick : _controller.EditorCurrentTick;
 
             BackupMacroOnce(macro);
             PushUndo(macro);
             int pasted = 0;
             foreach (var kvp in _clipboard)
             {
-                ulong target = (ulong)_selectedTick + kvp.Key;
+                ulong target = at + kvp.Key;
                 if (target > macro.MaxTick) break;
-                // Full-state paste = timeline surgery: the replay reproduces the pasted
-                // segment's real trajectory (with a position seam at the boundary).
-                macro.SetFullStateAt(target, kvp.Value);
+                // Paste all input fields (Move X/Y, Jump, Interact, Pan, Tilt) onto the
+                // destination tick, leaving its physics state intact (no teleport).
+                var src = kvp.Value;
+                macro.SetInputAt(target, src.Move, src.Jump, src.Interact, src.CameraPan, src.CameraTilt);
                 pasted++;
             }
-            SetStatus($"Pasted {pasted} frames at {_selectedTick} (full state — may seam at the boundary).");
+            SetStatus($"Pasted {pasted} frames at {at} (MoveX/Y, Jump, Int, Pan, Tilt).");
         }
 
         private void DrawFileSection(InputMacroSystem macro, float x, ref float y)
@@ -741,8 +758,8 @@ namespace FlippingIsHardTAS
             // Invariant culture: on Spanish Windows ToString gives "12,34" which the
             // invariant parser in TryParseFloat rejects — Apply failed without edits.
             var inv = System.Globalization.CultureInfo.InvariantCulture;
-            _editMoveX = st.Value.Move.x.ToString("F3", inv);
-            _editMoveY = st.Value.Move.y.ToString("F3", inv);
+            _editMoveX = st.Value.Move.x.ToString("F2", inv);
+            _editMoveY = st.Value.Move.y.ToString("F2", inv);
             _editPan = st.Value.CameraPan.ToString("F2", inv);
             _editTilt = st.Value.CameraTilt.ToString("F2", inv);
         }
@@ -767,8 +784,23 @@ namespace FlippingIsHardTAS
             var s = st.Value;
             BackupMacroOnce(macro);
             PushUndo(macro);
-            macro.SetInputAt((ulong)_selectedTick, new Vector2(mx, my), s.Jump, s.Interact, pan, tilt);
-            SetStatus($"Tick {_selectedTick} inputs edited (data only — re-record from here to change the run).");
+
+            // Move/Jump/Interact: data-only edit on the selected tick.
+            macro.SetInputAt((ulong)_selectedTick, new Vector2(mx, my), s.Jump, s.Interact, s.CameraPan, s.CameraTilt);
+
+            // Camera: aim it and have it STAY — propagate the new pan/tilt from this tick to
+            // the end (a later edit at a higher tick overrides downstream). The replay renders
+            // the camera from these orbital axes, so the view holds.
+            bool camChanged = !Mathf.Approximately(pan, s.CameraPan) || !Mathf.Approximately(tilt, s.CameraTilt);
+            if (camChanged)
+            {
+                macro.SetCameraFrom((ulong)_selectedTick, pan, tilt);
+                SetStatus($"Camera set to {pan:F1}/{tilt:F1} from tick {_selectedTick} onward.");
+            }
+            else
+            {
+                SetStatus($"Tick {_selectedTick} inputs edited (data only — re-record from here to change the run).");
+            }
         }
 
         private static bool TryParseFloat(string str, out float value)

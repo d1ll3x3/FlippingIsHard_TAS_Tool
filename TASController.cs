@@ -731,6 +731,32 @@ namespace FlippingIsHardTAS
         }
 
         /// <summary>
+        /// Editor "Edit here": positions the player at `tick`, switches from replay to live
+        /// Edit Mode (records from tick+1, discarding the macro after `tick` — same as the F8
+        /// hotkey), and runs the game so the player drives live. The editor closes its window
+        /// afterwards so the cursor locks and mouse-look works.
+        /// </summary>
+        public bool EditorEnterEditModeAt(ulong tick)
+        {
+            if (_macroSystem == null || !_macroSystem.HasRecordedData) return false;
+            if (_macroSystem.IsRecording || _macroSystem.IsEditMode) return false;
+            if (tick > _macroSystem.MaxTick || _macroSystem.GetStateAtTick(tick) == null) return false;
+
+            // Get into a paused replay positioned exactly at `tick` (same as clicking the
+            // tick number), so the state below is identical to the F8 hotkey path.
+            if (!SeekToTick(tick)) return false;
+
+            // Exactly what the F8 hotkey does: enter live Edit Mode at the current tick,
+            // leaving the game PAUSED (the user unpauses to drive).
+            if (!_timeController.IsPaused) _timeController.TogglePause();
+            ulong cutTick = _timeController.CurrentTick;
+            StopPlayback();
+            _macroSystem.EnterEditMode(cutTick);
+            TASPlugin.Logger.LogInfo($"TAS: Edit Mode ON at tick {cutTick} (from editor, = F8).");
+            return true;
+        }
+
+        /// <summary>
         /// Starts greenzone playback from the macro start (same as the Play hotkey) — the
         /// bit-perfect replay (state injection per tick). This is what the editor's Play does.
         /// </summary>
@@ -1044,7 +1070,7 @@ namespace FlippingIsHardTAS
                 _timeController.IsFastForward,
                 _macroSystem.IsEditMode,
                 _macroSystem.GreenzoneEnd,
-                _macroSystem.MaxTick
+                (ulong)_macroSystem.RecordedInputs.Count
             );
         }
         

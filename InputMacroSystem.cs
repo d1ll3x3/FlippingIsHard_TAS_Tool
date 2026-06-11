@@ -238,6 +238,24 @@ namespace FlippingIsHardTAS
         }
 
         /// <summary>
+        /// Sets the camera orbit (pan/tilt) on EVERY tick from fromTick to the end. The replay
+        /// renders the camera from these orbital axes, so the edited orientation holds from
+        /// fromTick onward until a later edit (at a higher tick) overrides it. Lets the user
+        /// "aim the camera and have it stay there."
+        /// </summary>
+        public void SetCameraFrom(ulong fromTick, float pan, float tilt)
+        {
+            foreach (var key in new List<ulong>(RecordedInputs.Keys))
+            {
+                if (key < fromTick) continue;
+                var st = RecordedInputs[key];
+                st.CameraPan = pan;
+                st.CameraTilt = tilt;
+                RecordedInputs[key] = st;
+            }
+        }
+
+        /// <summary>
         /// Overwrites the FULL recorded state (inputs + physics + camera) at a tick. Used by
         /// timeline surgery (paste): the replay then reproduces the pasted segment's real
         /// trajectory, with a possible position seam at the boundary.
