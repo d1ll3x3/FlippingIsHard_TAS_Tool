@@ -415,6 +415,8 @@ namespace FlippingIsHardTAS
         private bool _osW, _osA, _osS, _osD, _osSpace, _osE;
         private bool _osKeysActive = false;
 
+        private int _keyReassertCounter = 0;
+
         private void DriveOSKeysFromState(TASInputState st)
         {
             SetOSKey(KeyCode.W, ref _osW, st.Move.y > 0.3f);
@@ -424,6 +426,21 @@ namespace FlippingIsHardTAS
             SetOSKey(KeyCode.Space, ref _osSpace, st.Jump);
             SetOSKey(KeyCode.E, ref _osE, st.Interact);
             _osKeysActive = true;
+
+            // Re-assert held keys every ~10 ticks: SendInput only emits an event on
+            // press/release, so if the game resets its input state mid-run (landing,
+            // checkpoint, respawn) a long-held key would silently vanish for it.
+            // A repeated key-down on an already-held key is harmless.
+            if (++_keyReassertCounter >= 10)
+            {
+                _keyReassertCounter = 0;
+                if (_osW) OSInput.SetKeyPressed(KeyCode.W, true);
+                if (_osA) OSInput.SetKeyPressed(KeyCode.A, true);
+                if (_osS) OSInput.SetKeyPressed(KeyCode.S, true);
+                if (_osD) OSInput.SetKeyPressed(KeyCode.D, true);
+                if (_osSpace) OSInput.SetKeyPressed(KeyCode.Space, true);
+                if (_osE) OSInput.SetKeyPressed(KeyCode.E, true);
+            }
         }
 
         /// <summary>
@@ -475,6 +492,10 @@ namespace FlippingIsHardTAS
             _cachedRb = _gameObjectFinder.GetCachedPlayerRigidbody();
             RewindToTick(cutTick);
 
+            _robotCutTick = cutTick;
+            _robotStuckTicks = 0;
+            _hasUndoableResim = false;
+
             // No truncation: the robot overwrites rows in place as it advances, so the
             // user's input timeline never disappears (and survives an abort).
             _macroSystem.BeginRobotRecording();
@@ -511,6 +532,20 @@ namespace FlippingIsHardTAS
                 DriveOSKeysFromState(st);
                 InjectAxesFromState(st); // keep camera pan/tilt on the recorded path
                 LogRobotDiagnostics(tick);
+
+                // Stuck detection: script wants movement but the player hasn't moved for
+                // a full second → something froze the player. Abort losslessly instead of
+                // baking a dead run into the greenzone.
+                bool wantsMove = st.Move.sqrMagnitude > 0.09f;
+                bool stalled = _cachedRb != null && _cachedRb.linearVelocity.sqrMagnitude < 0.0004f;
+                if (wantsMove && stalled) _robotStuckTicks++;
+                else _robotStuckTicks = 0;
+
+                if (_robotStuckTicks >= 60)
+                {
+                    TASPlugin.Logger.LogError("TAS: ROBOT RESIM stuck — no movement for 60 ticks with input held. Restoring macro.");
+                    StopRobotResim(completed: false);
+                }
             }
         }
 
@@ -518,7 +553,6 @@ namespace FlippingIsHardTAS
         {
             if (!_robotActive) return;
             _robotActive = false;
-            _robotScript.Clear();
             ReleaseOSKeys();
             EnableMouseDevice();
             RestoreRobotSpeed();
@@ -526,12 +560,51 @@ namespace FlippingIsHardTAS
             if (_macroSystem.IsEditMode)
                 _macroSystem.ExitEditMode();
 
+            if (completed)
+            {
+                // Keep the script so the user can "Undo resim" if the result is bad
+                _hasUndoableResim = true;
+                TASPlugin.Logger.LogInfo($"TAS: ROBOT RESIM completed — greenzone now ends at {_macroSystem.GreenzoneEnd}.");
+            }
+            else
+            {
+                // Lossless abort: put the macro back exactly as it was before the resim
+                RestoreMacroFromScript();
+                _robotScript.Clear();
+                _hasUndoableResim = false;
+                TASPlugin.Logger.LogInfo($"TAS: ROBOT RESIM aborted — macro restored (greenzone back at {_macroSystem.GreenzoneEnd}).");
+            }
+
             // Pause so the user can inspect the result in the editor
             if (!_timeController.IsPaused) _timeController.TogglePause();
+        }
 
-            TASPlugin.Logger.LogInfo(completed
-                ? $"TAS: ROBOT RESIM completed — greenzone now ends at {_macroSystem.GreenzoneEnd}."
-                : "TAS: ROBOT RESIM aborted.");
+        /// <summary>Reverts the macro to its exact pre-resim contents (rows + greenzone).</summary>
+        private void RestoreMacroFromScript()
+        {
+            foreach (var kvp in _robotScript)
+                _macroSystem.RecordedInputs[kvp.Key] = kvp.Value;
+            if (_macroSystem.GreenzoneEnd > _robotCutTick)
+                _macroSystem.GreenzoneEnd = _robotCutTick;
+        }
+
+        /// <summary>Undoes the last completed robot resim (editor button).</summary>
+        public bool UndoLastResim()
+        {
+            if (_robotActive || !_hasUndoableResim || _robotScript.Count == 0) return false;
+            RestoreMacroFromScript();
+            _robotScript.Clear();
+            _hasUndoableResim = false;
+            TASPlugin.Logger.LogInfo($"TAS: Last resim undone — macro restored (greenzone back at {_macroSystem.GreenzoneEnd}).");
+            return true;
+        }
+
+        /// <summary>Called by the editor when the user edits inputs — the undo snapshot no longer matches.</summary>
+        public void InvalidateResimUndo()
+        {
+            if (_robotActive) return;
+            _hasUndoableResim = false;
+            _robotScript.Clear();
         }
 
         private void ApplyRobotSpeed()
@@ -600,12 +673,30 @@ namespace FlippingIsHardTAS
             {
                 string keys = $"{(_osW ? "W" : "")}{(_osA ? "A" : "")}{(_osS ? "S" : "")}{(_osD ? "D" : "")}{(_osSpace ? "_" : "")}{(_osE ? "E" : "")}";
                 string rbStr = _cachedRb != null
-                    ? $"pos={_cachedRb.position} vel={_cachedRb.linearVelocity}"
+                    ? $"pos={_cachedRb.position} vel={_cachedRb.linearVelocity} kin={_cachedRb.isKinematic}"
                     : "rb=null";
-                bool gamePaused = false, gameEnded = false;
-                try { gamePaused = EHS.GameManager.IsGamePaused; gameEnded = EHS.GameManager.IsGameEnded; } catch { }
+                bool gamePaused = false, gameEnded = false, summoned = false;
+                try
+                {
+                    gamePaused = EHS.GameManager.IsGamePaused;
+                    gameEnded = EHS.GameManager.IsGameEnded;
+                    summoned = EHS.GameManager.IsBeingSummoned;
+                }
+                catch { }
 
-                TASPlugin.Logger.LogInfo($"TAS ROBOT t={tick} keys=[{keys}] {rbStr} gamePaused={gamePaused} gameEnded={gameEnded}");
+                // GameInputPatch doesn't intercept while the robot runs (IsPlaying=false),
+                // so this is the input the game ACTUALLY sees. keys=[W] with gameMove=(0,0)
+                // means the held key got lost; gameMove=(0,1) with no motion means the game
+                // itself is freezing the player (summon/checkpoint/etc).
+                string gameMove = "?";
+                try
+                {
+                    var handler = _gameObjectFinder.FindPlayerTransform()?.GetComponent<EHS.PlayerInputHandler>();
+                    if (handler != null) gameMove = handler.MoveInput.ToString();
+                }
+                catch { }
+
+                TASPlugin.Logger.LogInfo($"TAS ROBOT t={tick} keys=[{keys}] gameMove={gameMove} {rbStr} gamePaused={gamePaused} gameEnded={gameEnded} summoned={summoned}");
             }
             catch (Exception ex)
             {
@@ -707,9 +798,13 @@ namespace FlippingIsHardTAS
         // recording path re-captures the real state, regenerating the greenzone.
         private bool _robotActive = false;
         private ulong _robotEndTick = 0;
+        private ulong _robotCutTick = 0;
+        private int _robotStuckTicks = 0;
+        private bool _hasUndoableResim = false;
         private readonly System.Collections.Generic.Dictionary<ulong, TASInputState> _robotScript
             = new System.Collections.Generic.Dictionary<ulong, TASInputState>();
         public bool IsRobotActive => _robotActive;
+        public bool HasUndoableResim => _hasUndoableResim && !_robotActive;
         public float RobotSpeed { get; set; } = 1f; // 1, 0.3 or 0.1 — applied at robot start
         
         private void CheckGameEnd()

@@ -349,7 +349,7 @@ namespace FlippingIsHardTAS
             }
             else
             {
-                if (CustomButton(new Rect(x, y, 70, 22), macro.IsPlaying ? "Stop" : "Play"))
+                if (CustomButton(new Rect(x, y, 60, 22), macro.IsPlaying ? "Stop" : "Play"))
                 {
                     if (macro.IsPlaying) _controller.EditorStopPlayback();
                     else
@@ -358,7 +358,7 @@ namespace FlippingIsHardTAS
                         if (!_controller.EditorPlayFromStart()) SetStatus("Could not start playback.");
                     }
                 }
-                if (CustomButton(new Rect(x + 76, y, 90, 22), "Resim"))
+                if (CustomButton(new Rect(x + 66, y, 70, 22), "Resim"))
                 {
                     BackupMacroOnce(macro);
                     if (_controller.StartRobotResim(fromStart: false))
@@ -366,7 +366,7 @@ namespace FlippingIsHardTAS
                     else
                         SetStatus("Nothing to resim (or busy) — edit an input first.");
                 }
-                if (CustomButton(new Rect(x + 172, y, 100, 22), "Full Resim"))
+                if (CustomButton(new Rect(x + 142, y, 90, 22), "Full Resim"))
                 {
                     BackupMacroOnce(macro);
                     if (_controller.StartRobotResim(fromStart: true))
@@ -374,16 +374,26 @@ namespace FlippingIsHardTAS
                     else
                         SetStatus("Could not start full resim.");
                 }
-                if (CustomButton(new Rect(x + 278, y, 95, 22), $"Speed: {_controller.RobotSpeed:0.#}x"))
+                if (CustomButton(new Rect(x + 238, y, 90, 22), $"Speed: {_controller.RobotSpeed:0.#}x"))
                 {
                     // Cycle 1x → 0.3x → 0.1x (slower = more accurate key timing)
                     _controller.RobotSpeed = _controller.RobotSpeed >= 0.99f ? 0.3f
                                            : _controller.RobotSpeed >= 0.25f ? 0.1f : 1f;
                 }
-                if (CustomButton(new Rect(x + 379, y, 110, 22), "Go to current"))
+                if (CustomButton(new Rect(x + 334, y, 95, 22), "Go to current"))
                     CenterOn(curTick);
-                if (CustomButton(new Rect(x + 495, y, 80, 22), _controller.EditorIsPaused ? "Resume" : "Pause"))
+                if (CustomButton(new Rect(x + 435, y, 70, 22), _controller.EditorIsPaused ? "Resume" : "Pause"))
                     _controller.EditorTogglePause();
+                if (_controller.HasUndoableResim)
+                {
+                    GUI.backgroundColor = new Color(0.8f, 0.7f, 0.2f);
+                    if (CustomButton(new Rect(x + 511, y, 70, 22), "Undo"))
+                    {
+                        if (_controller.UndoLastResim())
+                            SetStatus("Last resim undone — macro restored to its pre-resim state.");
+                    }
+                    GUI.backgroundColor = Color.white;
+                }
                 y += 30;
             }
 
@@ -496,6 +506,7 @@ namespace FlippingIsHardTAS
                 if (!EditingLocked())
                 {
                     BackupMacroOnce(macro);
+                    _controller.InvalidateResimUndo();
                     macro.SetInputAt(tick, s.Move, !s.Jump, s.Interact, s.CameraPan, s.CameraTilt);
                     if (_selectedTick == (long)tick) LoadSelectionIntoFields();
                 }
@@ -507,6 +518,7 @@ namespace FlippingIsHardTAS
                 if (!EditingLocked())
                 {
                     BackupMacroOnce(macro);
+                    _controller.InvalidateResimUndo();
                     macro.SetInputAt(tick, s.Move, s.Jump, !s.Interact, s.CameraPan, s.CameraTilt);
                     if (_selectedTick == (long)tick) LoadSelectionIntoFields();
                 }
@@ -568,6 +580,7 @@ namespace FlippingIsHardTAS
             }
             if (EditingLocked()) return;
             BackupMacroOnce(macro);
+            _controller.InvalidateResimUndo();
             int applied = 0;
             for (ulong t = from; t <= to && t <= macro.MaxTick; t++)
             {
@@ -614,6 +627,7 @@ namespace FlippingIsHardTAS
 
             var s = st.Value;
             BackupMacroOnce(macro);
+            _controller.InvalidateResimUndo();
             macro.SetInputAt((ulong)_selectedTick, new Vector2(mx, my), s.Jump, s.Interact, pan, tilt);
             SetStatus($"Tick {_selectedTick} edited. Greenzone cut at {macro.GreenzoneEnd}.");
         }
