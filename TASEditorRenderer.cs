@@ -16,24 +16,37 @@ namespace FlippingIsHardTAS
 
         private readonly TASController _controller;
         private bool _isVisible = false;
-        private Rect _windowRect = new Rect(60, 60, 660, 580);
+        private Rect _windowRect = new Rect(60, 60, 680, 660);
         private GUI.WindowFunction _windowDelegate;
 
         // Virtual scrolling
-        private const int VISIBLE_ROWS = 18;
-        private const float ROW_H = 22f;
+        private const int VISIBLE_ROWS = 16;
+        private const float ROW_H = 26f;
         private long _topTick = 0;
         private bool _followPlayback = true;
 
         // Selection / inline editing
         private long _selectedTick = -1;
         private string _editMoveX = "0", _editMoveY = "0", _editPan = "0", _editTilt = "0";
+        // IMGUI interactive controls (GUI.Button/Toggle/TextField) don't work in this
+        // game's IL2CPP build — visuals render but events never fire. Like the bind menu,
+        // everything is drawn with GUI.Box and hit-tested manually against legacy Input.
+        private string _activeField = null;
+        private bool _clickHandledThisFrame = false;
+
+        // Manual window dragging — GUI.DragWindow relies on the broken IMGUI event pipeline
+        private bool _dragging = false;
+        private Vector2 _dragOffset;
 
         // Range tool
         private string _rangeFrom = "0", _rangeTo = "0";
 
         private string _statusMsg = "";
         private float _statusTimer = 0f;
+
+        // One-time safety net per editor session: resim overwrites recorded physics
+        // state, so a broken resim would silently destroy the macro without this.
+        private bool _backupDone = false;
 
         // Styles
         private GUIStyle _styleCell, _styleCellOn, _styleHeader;
@@ -77,6 +90,34 @@ namespace FlippingIsHardTAS
                 CenterOn(_controller.EditorCurrentTick);
                 LoadSelectionIntoFields();
             }
+            _backupDone = false;
+        }
+
+        private bool EditingLocked()
+        {
+            if (_controller.IsRobotActive)
+            {
+                SetStatus("Robot resim running — wait for it to finish or press STOP.");
+                return true;
+            }
+            return false;
+        }
+
+        private void BackupMacroOnce(InputMacroSystem macro)
+        {
+            if (_backupDone || macro == null || !macro.HasRecordedData) return;
+            try
+            {
+                string path = System.IO.Path.Combine(BepInEx.Paths.PluginPath,
+                    "FlippingIsHardTAS", "Macros", "editor_backup.tas");
+                macro.ExportMacro(path);
+                _backupDone = true;
+                TASPlugin.Logger.LogInfo("TAS: Macro backed up to Macros/editor_backup.tas");
+            }
+            catch (Exception ex)
+            {
+                TASPlugin.Logger.LogError($"Macro backup failed: {ex}");
+            }
         }
 
         private void Close()
@@ -84,6 +125,7 @@ namespace FlippingIsHardTAS
             _isVisible = false;
             IsVisibleGlobally = false;
             IsTextFieldFocused = false;
+            _activeField = null;
             Cursor.lockState = _prevLock;
             Cursor.visible = _prevCursorVisible;
         }
@@ -106,19 +148,138 @@ namespace FlippingIsHardTAS
         {
             if (!_isVisible) return;
 
-            // Keep the cursor usable every frame — the game re-locks it
-            Cursor.lockState = CursorLockMode.None;
-            Cursor.visible = true;
+            // Keep the cursor usable while editing — the game re-locks it every frame.
+            // EXCEPT during active (unpaused) playback: the game gates gameplay input on
+            // the cursor being locked, so forcing it unlocked would freeze the player.
+            var macroSys = _controller.MacroSystem;
+            bool activePlayback = (macroSys != null && macroSys.IsPlaying || _controller.IsRobotActive)
+                                  && !_controller.EditorIsPaused;
+            if (!activePlayback)
+            {
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+            }
 
             InitStyles();
 
-            if (_followPlayback && _controller.MacroSystem != null && _controller.MacroSystem.IsPlaying)
+            if (_followPlayback && _controller.MacroSystem != null
+                && (_controller.MacroSystem.IsPlaying || _controller.IsRobotActive))
                 CenterOn(_controller.EditorCurrentTick);
+
+            if (Event.current.type == EventType.Repaint)
+                _clickHandledThisFrame = false;
+
+            HandleWindowDrag();
 
             _windowRect = GUI.Window(51237, _windowRect, _windowDelegate, "TAS EDITOR");
 
-            IsTextFieldFocused = !string.IsNullOrEmpty(GUI.GetNameOfFocusedControl()) &&
-                                 GUI.GetNameOfFocusedControl().StartsWith("tased_");
+            IsTextFieldFocused = _activeField != null;
+        }
+
+        private void HandleWindowDrag()
+        {
+            if (Event.current.type != EventType.Repaint) return;
+
+            Vector2 m = Input.mousePosition;
+            m.y = Screen.height - m.y;
+
+            if (Input.GetMouseButtonDown(0) && !_dragging)
+            {
+                // Title bar = top strip of the window, minus the X button corner
+                var titleRect = new Rect(_windowRect.x, _windowRect.y, _windowRect.width - 44, 24);
+                if (titleRect.Contains(m))
+                {
+                    _dragging = true;
+                    _dragOffset = m - new Vector2(_windowRect.x, _windowRect.y);
+                }
+            }
+
+            if (_dragging)
+            {
+                if (!Input.GetMouseButton(0))
+                    _dragging = false;
+                else
+                {
+                    _windowRect.x = Mathf.Clamp(m.x - _dragOffset.x, -_windowRect.width + 60, Screen.width - 60);
+                    _windowRect.y = Mathf.Clamp(m.y - _dragOffset.y, 0, Screen.height - 40);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Button that works under IL2CPP: GUI.Box visual + manual hit-test against
+        /// legacy Input (same approach as TASBindMenuRenderer.CustomButton).
+        /// Rect is in window-local coordinates.
+        /// </summary>
+        private bool CustomButton(Rect rect, string text)
+        {
+            GUI.Box(rect, text);
+            if (_clickHandledThisFrame) return false;
+
+            if (Input.GetMouseButtonDown(0))
+            {
+                Vector2 rawMouse = Input.mousePosition;
+                rawMouse.y = Screen.height - rawMouse.y;
+
+                Rect absRect = new Rect(_windowRect.x + rect.x, _windowRect.y + rect.y, rect.width, rect.height);
+
+                if (absRect.Contains(rawMouse))
+                {
+                    if (Event.current.type == EventType.Repaint)
+                    {
+                        _clickHandledThisFrame = true;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Minimal text field that works under IL2CPP (GUI.TextField is stripped here).
+        /// Click to focus, type to edit, Enter/Escape to unfocus.
+        /// </summary>
+        private string SimpleTextField(Rect r, string id, string value)
+        {
+            bool active = _activeField == id;
+            GUI.color = active ? new Color(0.8f, 1f, 0.8f) : Color.white;
+            GUI.Box(r, active ? value + "_" : value);
+            GUI.color = Color.white;
+
+            var e = Event.current;
+            if (Input.GetMouseButtonDown(0) && e.type == EventType.Repaint)
+            {
+                Rect abs = new Rect(_windowRect.x + r.x, _windowRect.y + r.y, r.width, r.height);
+                Vector2 m = Input.mousePosition;
+                m.y = Screen.height - m.y;
+                if (abs.Contains(m) && !_clickHandledThisFrame)
+                {
+                    _activeField = id;
+                    _clickHandledThisFrame = true;
+                }
+                else if (active && !abs.Contains(m))
+                    _activeField = null;
+            }
+
+            if (active && e.type == EventType.KeyDown)
+            {
+                if (e.keyCode == KeyCode.Backspace)
+                {
+                    if (value.Length > 0) value = value.Substring(0, value.Length - 1);
+                    e.Use();
+                }
+                else if (e.keyCode == KeyCode.Return || e.keyCode == KeyCode.Escape)
+                {
+                    _activeField = null;
+                    e.Use();
+                }
+                else if (e.character != 0 && e.character >= 32)
+                {
+                    value += e.character;
+                    e.Use();
+                }
+            }
+            return value;
         }
 
         private void InitStyles()
@@ -142,7 +303,7 @@ namespace FlippingIsHardTAS
             var macro = _controller.MacroSystem;
 
             GUI.backgroundColor = new Color(0.7f, 0.2f, 0.2f, 1f);
-            if (GUI.Button(new Rect(_windowRect.width - 36, 4, 28, 20), "X"))
+            if (CustomButton(new Rect(_windowRect.width - 36, 4, 28, 20), "X"))
             {
                 Close();
                 GUI.DragWindow();
@@ -154,7 +315,7 @@ namespace FlippingIsHardTAS
 
             if (macro == null || !macro.HasRecordedData)
             {
-                GUI.Label(new Rect(x, y, 600, 22), "No hay macro cargado. Graba (F9) o importa uno desde el menú (B).");
+                GUI.Label(new Rect(x, y, 600, 22), "No macro loaded. Record one (F9) or import from the menu (B).");
                 GUI.DragWindow();
                 return;
             }
@@ -162,27 +323,65 @@ namespace FlippingIsHardTAS
             // ── Toolbar ──
             ulong curTick = _controller.EditorCurrentTick;
             GUI.Label(new Rect(x, y, 420, 20),
-                $"Ticks: {macro.MaxTick}   Greenzone: {macro.GreenzoneEnd}   Actual: {curTick}" +
+                $"Ticks: {macro.MaxTick}   Greenzone: {macro.GreenzoneEnd}   Current: {curTick}" +
                 (macro.IsPlaying ? "   [PLAYING]" : ""));
 
-            _followPlayback = GUI.Toggle(new Rect(x + 430, y, 90, 20), _followPlayback, " Seguir");
+            GUI.backgroundColor = _followPlayback ? new Color(0.2f, 0.9f, 0.4f) : Color.white;
+            if (CustomButton(new Rect(x + 430, y, 110, 20), _followPlayback ? "Follow: ON" : "Follow: OFF"))
+                _followPlayback = !_followPlayback;
+            GUI.backgroundColor = Color.white;
             y += 24;
 
-            if (GUI.Button(new Rect(x, y, 70, 22), macro.IsPlaying ? "Stop" : "Play"))
+            bool robotActive = _controller.IsRobotActive;
+
+            if (robotActive)
             {
-                if (macro.IsPlaying) _controller.EditorStopPlayback();
-                else if (!_controller.EditorPlayFromStart()) SetStatus("No se pudo iniciar el playback.");
+                GUI.backgroundColor = new Color(0.9f, 0.3f, 0.2f);
+                if (CustomButton(new Rect(x, y, 70, 22), "STOP"))
+                    _controller.StopRobotResim(completed: false);
+                GUI.backgroundColor = Color.white;
+                GUI.color = new Color(1f, 0.6f, 0.2f);
+                GUI.Label(new Rect(x + 80, y, 440, 22), "ROBOT RESIM — HANDS OFF THE KEYBOARD!", _styleHeader);
+                GUI.color = Color.white;
+                y += 30;
             }
-            if (GUI.Button(new Rect(x + 76, y, 130, 22), "Resim completo"))
+            else
             {
-                if (_controller.EditorPlayFromStart(inputOnly: true))
-                    SetStatus("Resimulando todo el macro solo con inputs…");
-                else
-                    SetStatus("No se pudo iniciar la resimulación.");
+                if (CustomButton(new Rect(x, y, 70, 22), macro.IsPlaying ? "Stop" : "Play"))
+                {
+                    if (macro.IsPlaying) _controller.EditorStopPlayback();
+                    else
+                    {
+                        BackupMacroOnce(macro);
+                        if (!_controller.EditorPlayFromStart()) SetStatus("Could not start playback.");
+                    }
+                }
+                if (CustomButton(new Rect(x + 76, y, 90, 22), "Resim"))
+                {
+                    BackupMacroOnce(macro);
+                    if (_controller.StartRobotResim(fromStart: false))
+                        SetStatus("Robot resim from greenzone end — hands off the keyboard!");
+                    else
+                        SetStatus("Nothing to resim (or busy) — edit an input first.");
+                }
+                if (CustomButton(new Rect(x + 172, y, 100, 22), "Full Resim"))
+                {
+                    BackupMacroOnce(macro);
+                    if (_controller.StartRobotResim(fromStart: true))
+                        SetStatus("Robot resim of the whole macro — hands off the keyboard!");
+                    else
+                        SetStatus("Could not start full resim.");
+                }
+                if (CustomButton(new Rect(x + 278, y, 95, 22), $"Speed: {_controller.RobotSpeed:0.#}x"))
+                {
+                    // Cycle 1x → 0.3x → 0.1x (slower = more accurate key timing)
+                    _controller.RobotSpeed = _controller.RobotSpeed >= 0.99f ? 0.3f
+                                           : _controller.RobotSpeed >= 0.25f ? 0.1f : 1f;
+                }
+                if (CustomButton(new Rect(x + 379, y, 110, 22), "Go to current"))
+                    CenterOn(curTick);
+                y += 30;
             }
-            if (GUI.Button(new Rect(x + 212, y, 110, 22), "Ir a actual"))
-                CenterOn(curTick);
-            y += 30;
 
             // ── Header row ──
             float cx = x;
@@ -222,14 +421,20 @@ namespace FlippingIsHardTAS
 
         private void HandleScroll()
         {
-            var e = Event.current;
-            if (e.type == EventType.ScrollWheel)
-            {
-                _topTick += e.delta.y > 0 ? 3 : -3;
-                ClampScroll();
-                _followPlayback = false;
-                e.Use();
-            }
+            // Legacy Input — IMGUI ScrollWheel events never fire in this game.
+            // Only react once per frame (Repaint) and only with the mouse over the window.
+            if (Event.current.type != EventType.Repaint) return;
+
+            float scroll = Input.mouseScrollDelta.y;
+            if (scroll == 0f) return;
+
+            Vector2 m = Input.mousePosition;
+            m.y = Screen.height - m.y;
+            if (!_windowRect.Contains(m)) return;
+
+            _topTick += scroll < 0 ? 3 : -3;
+            ClampScroll();
+            _followPlayback = false;
         }
 
         private void DrawRow(InputMacroSystem macro, ulong tick, ulong curTick, float x, float y)
@@ -252,24 +457,25 @@ namespace FlippingIsHardTAS
             float cx = x;
 
             // Tick column: click = select + seek (if inside greenzone)
-            if (GUI.Button(new Rect(cx + 2, y, ColW[0] - 4, ROW_H - 3), tick.ToString()))
+            if (CustomButton(new Rect(cx + 2, y, ColW[0] - 4, ROW_H - 3), tick.ToString()))
             {
+                if (EditingLocked()) return;
                 _selectedTick = (long)tick;
                 LoadSelectionIntoFields();
                 _followPlayback = false;
                 if (tick <= macro.GreenzoneEnd)
                 {
                     if (!_controller.SeekToTick(tick))
-                        SetStatus($"No se pudo hacer seek al tick {tick}.");
+                        SetStatus($"Could not seek to tick {tick}.");
                 }
                 else
-                    SetStatus("Tick fuera de la greenzone — usa Play/Resim para regenerar el estado.");
+                    SetStatus("Tick is past the greenzone — use Play/Resim to regenerate state.");
             }
             cx += ColW[0];
 
             if (stateOpt == null)
             {
-                GUI.Label(new Rect(cx, y, 200, ROW_H), "— sin datos —", _styleCell);
+                GUI.Label(new Rect(cx, y, 200, ROW_H), "— no data —", _styleCell);
                 return;
             }
             var s = stateOpt.Value;
@@ -281,17 +487,25 @@ namespace FlippingIsHardTAS
 
             // Jump / Interact: one click toggles the button on that frame
             GUI.backgroundColor = s.Jump ? new Color(0.2f, 0.9f, 0.4f) : Color.white;
-            if (GUI.Button(new Rect(cx + 8, y, ColW[3] - 16, ROW_H - 3), s.Jump ? "J" : "·"))
+            if (CustomButton(new Rect(cx + 8, y, ColW[3] - 16, ROW_H - 3), s.Jump ? "J" : "·"))
             {
-                macro.SetInputAt(tick, s.Move, !s.Jump, s.Interact, s.CameraPan, s.CameraTilt);
-                if (_selectedTick == (long)tick) LoadSelectionIntoFields();
+                if (!EditingLocked())
+                {
+                    BackupMacroOnce(macro);
+                    macro.SetInputAt(tick, s.Move, !s.Jump, s.Interact, s.CameraPan, s.CameraTilt);
+                    if (_selectedTick == (long)tick) LoadSelectionIntoFields();
+                }
             }
             cx += ColW[3];
             GUI.backgroundColor = s.Interact ? new Color(0.2f, 0.9f, 0.4f) : Color.white;
-            if (GUI.Button(new Rect(cx + 8, y, ColW[4] - 16, ROW_H - 3), s.Interact ? "I" : "·"))
+            if (CustomButton(new Rect(cx + 8, y, ColW[4] - 16, ROW_H - 3), s.Interact ? "I" : "·"))
             {
-                macro.SetInputAt(tick, s.Move, s.Jump, !s.Interact, s.CameraPan, s.CameraTilt);
-                if (_selectedTick == (long)tick) LoadSelectionIntoFields();
+                if (!EditingLocked())
+                {
+                    BackupMacroOnce(macro);
+                    macro.SetInputAt(tick, s.Move, s.Jump, !s.Interact, s.CameraPan, s.CameraTilt);
+                    if (_selectedTick == (long)tick) LoadSelectionIntoFields();
+                }
             }
             GUI.backgroundColor = Color.white;
             cx += ColW[4];
@@ -303,46 +517,40 @@ namespace FlippingIsHardTAS
 
         private void DrawEditPanel(InputMacroSystem macro, float x, ref float y)
         {
-            GUI.Label(new Rect(x, y, 200, 20), $"EDITAR TICK {(_selectedTick >= 0 ? _selectedTick.ToString() : "—")}", _styleHeader);
+            GUI.Label(new Rect(x, y, 200, 20), $"EDIT TICK {(_selectedTick >= 0 ? _selectedTick.ToString() : "—")}", _styleHeader);
             y += 22;
 
             GUI.Label(new Rect(x, y, 55, 20), "MoveX:");
-            GUI.SetNextControlName("tased_mx");
-            _editMoveX = GUI.TextField(new Rect(x + 55, y, 60, 20), _editMoveX);
+            _editMoveX = SimpleTextField(new Rect(x + 55, y, 60, 20), "mx", _editMoveX);
             GUI.Label(new Rect(x + 125, y, 55, 20), "MoveY:");
-            GUI.SetNextControlName("tased_my");
-            _editMoveY = GUI.TextField(new Rect(x + 180, y, 60, 20), _editMoveY);
+            _editMoveY = SimpleTextField(new Rect(x + 180, y, 60, 20), "my", _editMoveY);
             GUI.Label(new Rect(x + 250, y, 40, 20), "Pan:");
-            GUI.SetNextControlName("tased_pan");
-            _editPan = GUI.TextField(new Rect(x + 290, y, 60, 20), _editPan);
+            _editPan = SimpleTextField(new Rect(x + 290, y, 60, 20), "pan", _editPan);
             GUI.Label(new Rect(x + 360, y, 40, 20), "Tilt:");
-            GUI.SetNextControlName("tased_tilt");
-            _editTilt = GUI.TextField(new Rect(x + 400, y, 60, 20), _editTilt);
+            _editTilt = SimpleTextField(new Rect(x + 400, y, 60, 20), "tilt", _editTilt);
 
-            if (GUI.Button(new Rect(x + 475, y, 80, 22), "Aplicar"))
+            if (CustomButton(new Rect(x + 475, y, 80, 22), "Apply"))
                 ApplyEditFields(macro);
             y += 28;
         }
 
         private void DrawRangeTool(InputMacroSystem macro, float x, ref float y)
         {
-            GUI.Label(new Rect(x, y, 200, 20), "RANGO", _styleHeader);
+            GUI.Label(new Rect(x, y, 200, 20), "RANGE", _styleHeader);
             y += 22;
 
-            GUI.Label(new Rect(x, y, 45, 20), "Desde:");
-            GUI.SetNextControlName("tased_rf");
-            _rangeFrom = GUI.TextField(new Rect(x + 45, y, 65, 20), _rangeFrom);
-            GUI.Label(new Rect(x + 120, y, 45, 20), "Hasta:");
-            GUI.SetNextControlName("tased_rt");
-            _rangeTo = GUI.TextField(new Rect(x + 165, y, 65, 20), _rangeTo);
+            GUI.Label(new Rect(x, y, 45, 20), "From:");
+            _rangeFrom = SimpleTextField(new Rect(x + 45, y, 65, 20), "rfrom", _rangeFrom);
+            GUI.Label(new Rect(x + 120, y, 45, 20), "To:");
+            _rangeTo = SimpleTextField(new Rect(x + 165, y, 65, 20), "rto", _rangeTo);
 
-            if (GUI.Button(new Rect(x + 245, y, 90, 22), "Jump ON"))
+            if (CustomButton(new Rect(x + 245, y, 90, 22), "Jump ON"))
                 ApplyRange(macro, jump: true);
-            if (GUI.Button(new Rect(x + 340, y, 90, 22), "Jump OFF"))
+            if (CustomButton(new Rect(x + 340, y, 90, 22), "Jump OFF"))
                 ApplyRange(macro, jump: false);
-            if (GUI.Button(new Rect(x + 435, y, 75, 22), "Int ON"))
+            if (CustomButton(new Rect(x + 435, y, 75, 22), "Int ON"))
                 ApplyRange(macro, interact: true);
-            if (GUI.Button(new Rect(x + 515, y, 75, 22), "Int OFF"))
+            if (CustomButton(new Rect(x + 515, y, 75, 22), "Int OFF"))
                 ApplyRange(macro, interact: false);
             y += 28;
         }
@@ -351,9 +559,11 @@ namespace FlippingIsHardTAS
         {
             if (!ulong.TryParse(_rangeFrom, out ulong from) || !ulong.TryParse(_rangeTo, out ulong to) || to < from)
             {
-                SetStatus("Rango inválido.");
+                SetStatus("Invalid range.");
                 return;
             }
+            if (EditingLocked()) return;
+            BackupMacroOnce(macro);
             int applied = 0;
             for (ulong t = from; t <= to && t <= macro.MaxTick; t++)
             {
@@ -366,7 +576,7 @@ namespace FlippingIsHardTAS
                                  s.CameraPan, s.CameraTilt);
                 applied++;
             }
-            SetStatus($"Aplicado a {applied} ticks ({from}–{to}). Greenzone cortada en {macro.GreenzoneEnd}.");
+            SetStatus($"Applied to {applied} ticks ({from}–{to}). Greenzone cut at {macro.GreenzoneEnd}.");
         }
 
         private void LoadSelectionIntoFields()
@@ -383,14 +593,15 @@ namespace FlippingIsHardTAS
 
         private void ApplyEditFields(InputMacroSystem macro)
         {
-            if (_selectedTick < 0) { SetStatus("Selecciona un tick primero (clic en su número)."); return; }
+            if (EditingLocked()) return;
+            if (_selectedTick < 0) { SetStatus("Select a tick first (click its number)."); return; }
             var st = macro.GetStateAtTick((ulong)_selectedTick);
-            if (st == null) { SetStatus("El tick seleccionado no tiene datos."); return; }
+            if (st == null) { SetStatus("Selected tick has no data."); return; }
 
             if (!TryParseFloat(_editMoveX, out float mx) || !TryParseFloat(_editMoveY, out float my) ||
                 !TryParseFloat(_editPan, out float pan) || !TryParseFloat(_editTilt, out float tilt))
             {
-                SetStatus("Valor numérico inválido.");
+                SetStatus("Invalid numeric value.");
                 return;
             }
 
@@ -398,8 +609,9 @@ namespace FlippingIsHardTAS
             my = Mathf.Clamp(my, -1f, 1f);
 
             var s = st.Value;
+            BackupMacroOnce(macro);
             macro.SetInputAt((ulong)_selectedTick, new Vector2(mx, my), s.Jump, s.Interact, pan, tilt);
-            SetStatus($"Tick {_selectedTick} editado. Greenzone cortada en {macro.GreenzoneEnd}.");
+            SetStatus($"Tick {_selectedTick} edited. Greenzone cut at {macro.GreenzoneEnd}.");
         }
 
         private static bool TryParseFloat(string str, out float value)

@@ -68,7 +68,7 @@ Flipping is Hard Demo/BepInEx/
 | Slow Motion (×0.1) | `F12` |
 | Slow-Mo Boost (×0.3) | `E` (hold while slow-mo active) |
 | Open Settings | `B` |
-| Open TAS Editor | `Tab` |
+| Open TAS Editor | `T` |
 
 All binds are remappable in-game via the **Settings menu** (`B`).
 
@@ -92,7 +92,7 @@ Output: `bin/Debug/net6.0/FlippingIsHardTAS.dll`
 - **Playback**: On `OnPrePhysicsSimulation`, the full recorded state (position, rotation, velocity) is injected into the Rigidbody *before* PhysX simulates — giving deterministic results.
 - **Edit Mode**: During playback, press F8 to stop at the current tick. All macro data before that tick is preserved; everything after is replaced by your new inputs. Export the edited run when done.
 - **Rewind**: While paused during replay, press `,` to step back 1 tick — loads the recorded physics state from the macro data at that tick.
-- **TAS Editor**: Press `Tab` to open the piano-roll editor. Each row is one physics tick showing the recorded inputs. Click a tick number to seek there (paused); toggle Jump/Interact per frame; edit Move/Pan/Tilt values for a selected tick; apply Jump/Interact over a tick range. Editing an input cuts the **greenzone** (valid recorded physics state) back to that tick — pressing Play injects state up to the cut, then switches to input-only resimulation, re-capturing state as it goes. `.tas` files use the `TAS3` format (old `TAS2` files import fine).
+- **TAS Editor**: Press `T` to open the piano-roll editor. Each row is one physics tick showing the recorded inputs. Click a tick number to seek there (paused); toggle Jump/Interact per frame; edit Move/Pan/Tilt values for a selected tick; apply Jump/Interact over a tick range. Editing an input cuts the **greenzone** (valid recorded physics state) back to that tick — pressing Play injects state up to the cut, then switches to input-only resimulation, re-capturing state as it goes. `.tas` files use the `TAS3` format (old `TAS2` files import fine).
 
 ---
 

@@ -122,6 +122,16 @@ namespace FlippingIsHardTAS
             EnableInputSystemDevices();
         }
         
+        /// <summary>
+        /// Re-enables input devices during resimulation. The game's input pipeline may
+        /// need live devices to process ticks; recorded inputs are still injected into
+        /// rawData every tick, overriding whatever the real devices produce.
+        /// </summary>
+        public void EnableDevicesForResim()
+        {
+            EnableInputSystemDevices();
+        }
+
         private void DisableInputSystemDevices()
         {
             try
@@ -307,6 +317,13 @@ namespace FlippingIsHardTAS
         {
             if (btn == 4) return _currentPlaybackState.Jump && !_previousPlaybackState.Jump;
             if (btn == 8) return _currentPlaybackState.Interact && !_previousPlaybackState.Interact;
+            return false;
+        }
+
+        public bool GetButtonReleased(int btn)
+        {
+            if (btn == 4) return !_currentPlaybackState.Jump && _previousPlaybackState.Jump;
+            if (btn == 8) return !_currentPlaybackState.Interact && _previousPlaybackState.Interact;
             return false;
         }
 

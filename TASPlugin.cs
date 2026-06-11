@@ -29,6 +29,12 @@ namespace FlippingIsHardTAS
                 harmony.PatchAll(typeof(GameInputPatch));
                 Logger.LogInfo("GameInputPatch applied.");
 
+                // NOTE: do NOT Harmony-patch NetworkBehaviour.Reconcile_Client_Start —
+                // the il2cpp trampoline for it throws NullReferenceException on every
+                // call, which both spams the log and corrupts FishNet's prediction
+                // pipeline (random teleports). If reconciliation ever needs blocking,
+                // it must be done through FishNet's managed API instead.
+
                 // Register our custom MonoBehaviour with IL2CPP before using AddComponent
                 ClassInjector.RegisterTypeInIl2Cpp<TASBehaviour>();
 

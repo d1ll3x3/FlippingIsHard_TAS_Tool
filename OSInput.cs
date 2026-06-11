@@ -87,6 +87,8 @@ namespace FlippingIsHardTAS
                 case KeyCode.S: return 0x53;
                 case KeyCode.D: return 0x44;
                 case KeyCode.Space: return 0x20;
+                case KeyCode.E: return 0x45;
+                case KeyCode.LeftShift: return 0xA0;
                 case KeyCode.UpArrow: return 0x26;
                 case KeyCode.DownArrow: return 0x28;
                 case KeyCode.LeftArrow: return 0x25;

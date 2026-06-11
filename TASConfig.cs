@@ -92,7 +92,7 @@ namespace FlippingIsHardTAS
         public KeyBind FrameAdvance   { get; set; } = new KeyBind(KeyCode.Period);
         public KeyBind ResetTick      { get; set; } = new KeyBind(KeyCode.F5);
         public KeyBind FastForward    { get; set; } = new KeyBind(KeyCode.F6);
-        public KeyBind OpenEditor     { get; set; } = new KeyBind(KeyCode.Tab);
+        public KeyBind OpenEditor     { get; set; } = new KeyBind(KeyCode.T);
         public float OverlayScale      { get; set; } = 1.0f;
     }
 

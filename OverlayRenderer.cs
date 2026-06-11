@@ -149,7 +149,7 @@ namespace FlippingIsHardTAS
                          + sectionH + lineH * 2  // savestate section
                          + sectionH + lineH * 5  // macro section
                          + sectionH + lineH * 4  // playback section
-                         + sectionH + lineH       // ui section
+                         + sectionH + lineH * 2   // ui section
                          + 14f * sc;              // padding
 
             float x = pad;
@@ -256,6 +256,7 @@ namespace FlippingIsHardTAS
             // ── UI ──
             DrawSectionLabel(cx, ref cy, "INTERFACE", ctrlW, lineH);
             DrawKeySingle(cx, ref cy, $"[{s.OpenBindMenu}] Open Settings", _dimColor, ctrlW, lineH);
+            DrawKeySingle(cx, ref cy, $"[{s.OpenEditor}] Open TAS Editor", _dimColor, ctrlW, lineH);
         }
 
         private void DrawSectionLabel(float x, ref float y, string title, float ctrlW, float lineH)
