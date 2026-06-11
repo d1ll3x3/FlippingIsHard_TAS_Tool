@@ -19,7 +19,7 @@ namespace FlippingIsHardTAS
         private bool _isVisible = false;
         private bool _pendingClose = false;
         // Taller window to fit all 8 binds and the new Macro section
-        private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 345, 520, 670);
+        private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 350, 520, 700);
 
         private GUIStyle _titleStyle;
         private GUIStyle _sectionStyle;
@@ -113,6 +113,7 @@ namespace FlippingIsHardTAS
             FrameAdvance  = src.FrameAdvance.Clone(),
             ResetTick     = src.ResetTick.Clone(),
             FastForward   = src.FastForward.Clone(),
+            OpenEditor    = src.OpenEditor.Clone(),
             OverlayScale  = src.OverlayScale,
         };
 
@@ -234,6 +235,7 @@ namespace FlippingIsHardTAS
                 case "FrameAdvance": _tempSettings.FrameAdvance = new KeyBind(main, mod); break;
                 case "ResetTick":    _tempSettings.ResetTick    = new KeyBind(main, mod); break;
                 case "FastForward":  _tempSettings.FastForward  = new KeyBind(main, mod); break;
+                case "OpenEditor":   _tempSettings.OpenEditor   = new KeyBind(main, mod); break;
             }
         }
 
@@ -272,6 +274,7 @@ namespace FlippingIsHardTAS
             // ── Section: UI ──────────────────────────────────────────
             DrawSectionLabel(cx, ref cy, "INTERFACE");
             DrawBindRow(cx, ref cy, "Open Settings",  "Menu", _tempSettings.OpenBindMenu);
+            DrawBindRow(cx, ref cy, "Open TAS Editor", "OpenEditor", _tempSettings.OpenEditor);
             
             // Overlay scale: use +/- buttons instead of slider for compatibility
             GUI.color = Color.white;

@@ -10,6 +10,14 @@ namespace FlippingIsHardTAS
         public bool IsEditMode { get; private set; }
         public int RNGSeed { get; set; }
         public ulong MaxTick { get; set; }
+
+        /// <summary>
+        /// Last tick whose recorded physics state is still valid ("greenzone", like TAS Studio).
+        /// Up to this tick, playback injects the recorded physics state for perfect determinism.
+        /// Beyond it (after an input edit in the editor), playback injects ONLY inputs and lets
+        /// PhysX resimulate, re-capturing the state as it goes to extend the greenzone again.
+        /// </summary>
+        public ulong GreenzoneEnd { get; set; }
         
         public Dictionary<ulong, TASInputState> RecordedInputs = new Dictionary<ulong, TASInputState>();
 
@@ -30,6 +38,7 @@ namespace FlippingIsHardTAS
         {
             IsRecording = false;
             IsEditMode = false;
+            GreenzoneEnd = 0;
             RecordedInputs.Clear();
             _currentPlaybackState = default;
             _previousPlaybackState = default;
@@ -42,6 +51,7 @@ namespace FlippingIsHardTAS
             IsPlaying = false;
             RecordedInputs.Clear();
             MaxTick = 0;
+            GreenzoneEnd = 0;
             RNGSeed = UnityEngine.Random.Range(int.MinValue, int.MaxValue);
             UnityEngine.Random.InitState(RNGSeed);
             TASPlugin.Logger.LogInfo($"TAS: Started Recording Inputs with Seed: {RNGSeed}");
@@ -77,6 +87,7 @@ namespace FlippingIsHardTAS
             
             // Update MaxTick to currentTick (the last preserved tick)
             MaxTick = currentTick;
+            if (GreenzoneEnd > currentTick) GreenzoneEnd = currentTick;
             
             // Start recording from the NEXT tick (don't clear data!)
             IsRecording = true;
@@ -149,13 +160,61 @@ namespace FlippingIsHardTAS
             }
             foreach (var key in keysToRemove)
                 RecordedInputs.Remove(key);
+            if (tick > 0 && GreenzoneEnd >= tick) GreenzoneEnd = tick - 1;
         }
-        
+
         public void RecordTick(ulong currentTick, TASInputState state)
         {
             if (!IsRecording) return;
             RecordedInputs[currentTick] = state;
             if (currentTick > MaxTick) MaxTick = currentTick;
+            // Real recording always captures real physics state — greenzone extends with it
+            if (currentTick > GreenzoneEnd) GreenzoneEnd = currentTick;
+        }
+
+        /// <summary>
+        /// Replaces ONLY the input portion of the state at a tick (editor use).
+        /// The recorded physics state at the tick itself stays valid (it's the pre-tick state),
+        /// but every state AFTER it becomes stale, so the greenzone is cut back to this tick.
+        /// </summary>
+        public void SetInputAt(ulong tick, Vector2 move, bool jump, bool interact, float camPan, float camTilt)
+        {
+            if (!RecordedInputs.TryGetValue(tick, out var state)) return;
+
+            bool changed = state.Move != move || state.Jump != jump || state.Interact != interact ||
+                           state.CameraPan != camPan || state.CameraTilt != camTilt;
+            if (!changed) return;
+
+            state.Move = move;
+            state.Jump = jump;
+            state.Interact = interact;
+            state.CameraPan = camPan;
+            state.CameraTilt = camTilt;
+            RecordedInputs[tick] = state;
+
+            if (GreenzoneEnd > tick) GreenzoneEnd = tick;
+        }
+
+        /// <summary>
+        /// During resimulation (playback beyond the greenzone), overwrites the stale physics/camera
+        /// state at this tick with the freshly simulated one, extending the greenzone.
+        /// Inputs at the tick are preserved untouched.
+        /// </summary>
+        public void ResimCaptureTick(ulong tick, Vector3 playerPos, Quaternion playerRot,
+                                     Vector3 playerVel, Vector3 playerAngVel,
+                                     Vector3 camPos, Quaternion camRot)
+        {
+            if (!RecordedInputs.TryGetValue(tick, out var state)) return;
+
+            state.PlayerPosition = playerPos;
+            state.PlayerRotation = playerRot;
+            state.PlayerVelocity = playerVel;
+            state.PlayerAngularVelocity = playerAngVel;
+            state.CameraPosition = camPos;
+            state.CameraRotation = camRot;
+            RecordedInputs[tick] = state;
+
+            if (tick > GreenzoneEnd) GreenzoneEnd = tick;
         }
         
         public void PlaybackTick(ulong currentTick)

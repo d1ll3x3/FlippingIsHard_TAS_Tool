@@ -18,6 +18,8 @@ A **BepInEx** mod for *Flipping is Hard (Demo)* that adds full TAS (Tool-Assiste
 | 🏁 **Auto-stop on game end** | Recording/playback stops when run finishes, B menu opens for quick export |
 | 📐 **HUD Scale** | Adjustable HUD size (0.25x – 2.0x) in settings menu |
 | 🧱 **Rewind collision fix** | Collider temporarily disabled during rewind to prevent jump reset |
+| 🎹 **TAS Editor (piano roll)** | Frame-by-frame input editor (Tab) — edit Move/Jump/Interact/camera per tick, like TAS Studio |
+| 🟩 **Greenzone + Resim** | Edited inputs invalidate downstream state; playback auto-resimulates past the edit point and re-validates it |
 | 📁 **Macro Export & Import** | Save your recorded TAS runs to disk (`.tas` files) and load them later |
 | 🔄 **Quick Restart Hook** | Full compatibility with the game's Quick Restart. Auto-pauses at tick 0 |
 | ⏸ **Pause / Frame Advance** | Pause time and step exactly 1 physics tick per press; hold for 10 ticks/sec |
@@ -66,6 +68,7 @@ Flipping is Hard Demo/BepInEx/
 | Slow Motion (×0.1) | `F12` |
 | Slow-Mo Boost (×0.3) | `E` (hold while slow-mo active) |
 | Open Settings | `B` |
+| Open TAS Editor | `Tab` |
 
 All binds are remappable in-game via the **Settings menu** (`B`).
 
@@ -89,6 +92,7 @@ Output: `bin/Debug/net6.0/FlippingIsHardTAS.dll`
 - **Playback**: On `OnPrePhysicsSimulation`, the full recorded state (position, rotation, velocity) is injected into the Rigidbody *before* PhysX simulates — giving deterministic results.
 - **Edit Mode**: During playback, press F8 to stop at the current tick. All macro data before that tick is preserved; everything after is replaced by your new inputs. Export the edited run when done.
 - **Rewind**: While paused during replay, press `,` to step back 1 tick — loads the recorded physics state from the macro data at that tick.
+- **TAS Editor**: Press `Tab` to open the piano-roll editor. Each row is one physics tick showing the recorded inputs. Click a tick number to seek there (paused); toggle Jump/Interact per frame; edit Move/Pan/Tilt values for a selected tick; apply Jump/Interact over a tick range. Editing an input cuts the **greenzone** (valid recorded physics state) back to that tick — pressing Play injects state up to the cut, then switches to input-only resimulation, re-capturing state as it goes. `.tas` files use the `TAS3` format (old `TAS2` files import fine).
 
 ---
 

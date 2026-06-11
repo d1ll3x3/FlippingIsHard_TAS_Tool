@@ -6,7 +6,8 @@ namespace FlippingIsHardTAS
 {
     public static class TASMacroSerializer
     {
-        private const string MAGIC_HEADER = "TAS2";
+        private const string MAGIC_HEADER = "TAS3";
+        private const string LEGACY_HEADER = "TAS2";
 
         public static void ExportToFile(InputMacroSystem sys, string filePath)
         {
@@ -25,6 +26,7 @@ namespace FlippingIsHardTAS
                 // Write Metadata
                 writer.Write(sys.RNGSeed);
                 writer.Write(sys.MaxTick);
+                writer.Write(sys.GreenzoneEnd);
                 
                 // Write Data
                 writer.Write(sys.RecordedInputs.Count);
@@ -61,7 +63,7 @@ namespace FlippingIsHardTAS
             using (var reader = new BinaryReader(stream))
             {
                 var header = reader.ReadString();
-                if (header != MAGIC_HEADER)
+                if (header != MAGIC_HEADER && header != LEGACY_HEADER)
                 {
                     TASPlugin.Logger.LogError("Invalid TAS macro file format.");
                     return false;
@@ -69,11 +71,14 @@ namespace FlippingIsHardTAS
 
                 int seed = reader.ReadInt32();
                 ulong maxTick = reader.ReadUInt64();
+                // TAS2 files predate the greenzone — all their recorded state is valid
+                ulong greenzoneEnd = header == MAGIC_HEADER ? reader.ReadUInt64() : maxTick;
                 int count = reader.ReadInt32();
 
                 sys.Clear();
                 sys.RNGSeed = seed;
                 sys.MaxTick = maxTick;
+                sys.GreenzoneEnd = greenzoneEnd;
 
                 for (int i = 0; i < count; i++)
                 {

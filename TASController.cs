@@ -12,6 +12,8 @@ namespace FlippingIsHardTAS
         private SavestateSystem _savestateSystem;
         private InputMacroSystem _macroSystem;
         private TASBindMenuRenderer _bindMenu;
+        private TASEditorRenderer _editor;
+        private bool _wasEditorKeyPressed = false;
 
         private bool _wasTeleportPressed = false;
         private bool _wasSavePressed = false;
@@ -75,6 +77,7 @@ namespace FlippingIsHardTAS
                         _bindMenu.RequestClose();
                     }
                 };
+                _editor = new TASEditorRenderer(this);
                 GameInputPatch.MacroSystem = _macroSystem;
                 FishNetReconcilePatch.MacroSystem = _macroSystem;
                 
@@ -112,6 +115,7 @@ namespace FlippingIsHardTAS
                     if (!_isInGame && wasInGame)
                     {
                         TASPlugin.Logger.LogInfo("TAS: Exited to menu, making mod dormant.");
+                        _editor?.ForceClose();
                         _timeController?.ResetTick();
                         _macroSystem?.Clear();
                         _savestateSystem?.Clear();
@@ -160,7 +164,9 @@ namespace FlippingIsHardTAS
                 // Auto-stop recording/playback when game ends
                 CheckGameEnd();
                 
-                if (_macroSystem != null && _macroSystem.IsPlaying && Camera.main != null)
+                if (_macroSystem != null && _macroSystem.IsPlaying && Camera.main != null
+                    && !_wasResimulating
+                    && _timeController.CurrentTick <= _macroSystem.GreenzoneEnd)
                 {
                     if (_timeController.IsPaused)
                     {
@@ -254,17 +260,46 @@ namespace FlippingIsHardTAS
                     }
                     else
                     {
-                        _macroSystem.PlaybackTick(_timeController.CurrentTick);
+                        ulong tick = _timeController.CurrentTick;
+                        bool inGreenzone = tick <= _macroSystem.GreenzoneEnd;
 
-                        if (Camera.main != null)
+                        if (inGreenzone)
                         {
-                            Quaternion rot = _macroSystem.GetCurrentCameraRotation();
-                            rot.Normalize();
-                            Camera.main.transform.rotation = rot;
-                            Camera.main.transform.position = _macroSystem.GetCurrentCameraPosition();
+                            _macroSystem.PlaybackTick(tick);
+
+                            if (Camera.main != null)
+                            {
+                                Quaternion rot = _macroSystem.GetCurrentCameraRotation();
+                                rot.Normalize();
+                                Camera.main.transform.rotation = rot;
+                                Camera.main.transform.position = _macroSystem.GetCurrentCameraPosition();
+                            }
+
+                            InjectPlaybackAxes();
+                            _wasResimulating = false;
                         }
-                        
-                        InjectPlaybackAxes();
+                        else
+                        {
+                            // Resimulation: physics ran freely last tick — capture the fresh state
+                            // into the macro (preserving the edited inputs) to extend the greenzone.
+                            if (!_wasResimulating)
+                            {
+                                // Transition greenzone → resim: hand the camera back to Cinemachine cleanly
+                                ResetCinemachineDamping();
+                                _wasResimulating = true;
+                            }
+
+                            if (_cachedRb != null && Camera.main != null)
+                            {
+                                _macroSystem.ResimCaptureTick(tick,
+                                    _cachedRb.position, _cachedRb.rotation,
+                                    _cachedRb.linearVelocity, _cachedRb.angularVelocity,
+                                    Camera.main.transform.position, Camera.main.transform.rotation);
+                            }
+
+                            _macroSystem.PlaybackTick(tick);
+                            InjectPlaybackAxes();
+                        }
                     }
                 }
             }
@@ -291,6 +326,7 @@ namespace FlippingIsHardTAS
 
         private void ResetTrainer()
         {
+            _editor?.ForceClose();
             _timeController?.ResetTick();
             if (_macroSystem != null)
             {
@@ -314,6 +350,9 @@ namespace FlippingIsHardTAS
                 if (!enabled || !_isInGame) return;
                 if (_cachedRb == null) return;
                 if (_macroSystem == null || !_macroSystem.IsPlaying) return;
+                // Beyond the greenzone the recorded physics state is stale (inputs were edited):
+                // inject only inputs (via GameInputPatch) and let PhysX resimulate.
+                if (_timeController.CurrentTick > _macroSystem.GreenzoneEnd) return;
 
                 _cachedRb.position        = _macroSystem.GetCurrentPlayerPosition();
                 _cachedRb.rotation        = _macroSystem.GetCurrentPlayerRotation();
@@ -334,6 +373,7 @@ namespace FlippingIsHardTAS
             {
                 if (!enabled || !_isInGame) return;
                 _overlayRenderer.OnGUI();
+                _editor?.Draw();
             }
             catch (Exception ex)
             {
@@ -342,6 +382,8 @@ namespace FlippingIsHardTAS
         }
         
         private bool _wasGameEnded = false;
+        // True while playback is past the greenzone and PhysX is resimulating from edited inputs
+        private bool _wasResimulating = false;
         
         private void CheckGameEnd()
         {
@@ -372,6 +414,14 @@ namespace FlippingIsHardTAS
         private void HandleHotkeys()
         {
             if (TASBindMenuRenderer.IsVisibleGlobally) return;
+
+            // Editor toggle works always; while typing in an editor text field, block everything else
+            bool isEditorKeyPressed = TASConfig.Settings.OpenEditor.IsPressed();
+            if (isEditorKeyPressed && !_wasEditorKeyPressed)
+                _editor.ToggleVisibility();
+            _wasEditorKeyPressed = isEditorKeyPressed;
+
+            if (TASEditorRenderer.IsTextFieldFocused) return;
 
             bool isTeleportPressed = TASConfig.Settings.Teleport.IsPressed();
             bool isSavePressed = TASConfig.Settings.SavePosition.IsPressed();
@@ -534,6 +584,67 @@ namespace FlippingIsHardTAS
             _wasFastForwardPressed = isFastForwardPressed;
         }
         
+        // ===== Public API for the TAS Editor (piano roll) =====
+
+        public InputMacroSystem MacroSystem => _macroSystem;
+        public ulong EditorCurrentTick => _timeController != null ? _timeController.CurrentTick : 0;
+        public bool EditorIsPaused => _timeController != null && _timeController.IsPaused;
+
+        public void EditorPauseGame()
+        {
+            if (_timeController != null && !_timeController.IsPaused)
+                _timeController.TogglePause();
+        }
+
+        /// <summary>
+        /// Seeks (paused) to a tick inside the greenzone, entering paused playback so
+        /// frame advance continues the macro from there. Returns false if the tick has
+        /// no valid state (beyond the greenzone) — play through it to resimulate first.
+        /// </summary>
+        public bool SeekToTick(ulong tick)
+        {
+            if (_macroSystem == null || !_macroSystem.HasRecordedData) return false;
+            if (tick > _macroSystem.GreenzoneEnd || _macroSystem.GetStateAtTick(tick) == null) return false;
+            if (_macroSystem.IsRecording || _macroSystem.IsEditMode) return false;
+
+            EditorPauseGame();
+
+            if (!_macroSystem.IsPlaying)
+                StartPlaybackWithAxes(tick);
+
+            RewindToTick(tick);
+            _macroSystem.PlaybackTick(tick);
+            _macroSystem.PlaybackTick(tick);
+            return true;
+        }
+
+        /// <summary>
+        /// Starts playback from the macro start (same as the Play hotkey).
+        /// If inputs were edited, playback auto-switches to resimulation past the greenzone.
+        /// </summary>
+        public bool EditorPlayFromStart(bool inputOnly = false)
+        {
+            if (_macroSystem == null || !_macroSystem.HasRecordedData) return false;
+            if (_macroSystem.IsPlaying || _macroSystem.IsRecording || _macroSystem.IsEditMode) return false;
+
+            if (inputOnly)
+            {
+                // Determinism test / full resim: discard all state injection beyond the start tick
+                _macroSystem.GreenzoneEnd = _savestateSystem.MacroTick;
+            }
+
+            _savestateSystem.LoadState(_gameObjectFinder, _timeController, true);
+            Physics.SyncTransforms();
+            StartPlaybackWithAxes(_savestateSystem.MacroTick);
+            return true;
+        }
+
+        public void EditorStopPlayback()
+        {
+            if (_macroSystem != null && _macroSystem.IsPlaying)
+                StopPlayback();
+        }
+
         private void StartPlaybackWithAxes(ulong startTick)
         {
             _cachedRb = _gameObjectFinder.GetCachedPlayerRigidbody();
@@ -543,6 +654,7 @@ namespace FlippingIsHardTAS
                 _cachedRb.interpolation = RigidbodyInterpolation.Interpolate;
             }
             
+            _wasResimulating = false;
             _macroSystem.StartPlaying();
             _macroSystem.PlaybackTick(startTick);
             ResetCinemachineDamping();
@@ -559,6 +671,7 @@ namespace FlippingIsHardTAS
 
         private void StopPlayback()
         {
+            _wasResimulating = false;
             _macroSystem.StopPlaying();
             if (_cachedRb != null)
                 _cachedRb.interpolation = _originalInterpolation;
