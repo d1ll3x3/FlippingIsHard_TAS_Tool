@@ -95,6 +95,21 @@ namespace FlippingIsHardTAS
         }
         
         /// <summary>
+        /// Enters robot-recording mode: like EnterEditMode but WITHOUT truncating the
+        /// macro. The robot overwrites entries in place as it re-simulates, so the
+        /// user's input timeline stays visible (and recoverable on abort). MaxTick is
+        /// left untouched.
+        /// </summary>
+        public void BeginRobotRecording()
+        {
+            IsPlaying = false;
+            IsEditMode = true;
+            IsRecording = true;
+            EnableInputSystemDevices();
+            TASPlugin.Logger.LogInfo($"TAS: Robot recording started — macro kept intact ({RecordedInputs.Count} ticks, MaxTick={MaxTick}).");
+        }
+
+        /// <summary>
         /// Exits Edit Mode: stops recording user inputs. The macro now contains
         /// the original prefix + the newly recorded suffix.
         /// </summary>

@@ -340,8 +340,10 @@ namespace FlippingIsHardTAS
                 if (CustomButton(new Rect(x, y, 70, 22), "STOP"))
                     _controller.StopRobotResim(completed: false);
                 GUI.backgroundColor = Color.white;
+                if (CustomButton(new Rect(x + 76, y, 90, 22), _controller.EditorIsPaused ? "Resume" : "Pause"))
+                    _controller.EditorTogglePause();
                 GUI.color = new Color(1f, 0.6f, 0.2f);
-                GUI.Label(new Rect(x + 80, y, 440, 22), "ROBOT RESIM — HANDS OFF THE KEYBOARD!", _styleHeader);
+                GUI.Label(new Rect(x + 176, y, 380, 22), "ROBOT RESIM — HANDS OFF THE KEYBOARD!", _styleHeader);
                 GUI.color = Color.white;
                 y += 30;
             }
@@ -380,6 +382,8 @@ namespace FlippingIsHardTAS
                 }
                 if (CustomButton(new Rect(x + 379, y, 110, 22), "Go to current"))
                     CenterOn(curTick);
+                if (CustomButton(new Rect(x + 495, y, 80, 22), _controller.EditorIsPaused ? "Resume" : "Pause"))
+                    _controller.EditorTogglePause();
                 y += 30;
             }
 

@@ -248,7 +248,33 @@ namespace FlippingIsHardTAS
                             _cachedRb != null ? _cachedRb.angularVelocity : Vector3.zero,
                             camPan, camTilt
                         );
-                        _macroSystem.RecordTick(_timeController.CurrentTick, state);
+
+                        bool record = true;
+                        if (_robotActive)
+                        {
+                            ulong t = _timeController.CurrentTick;
+                            if (t > _robotEndTick)
+                            {
+                                // Don't grow the macro past its original end (+1 tick drift per resim)
+                                record = false;
+                            }
+                            else if (_robotScript.TryGetValue(t, out var scripted))
+                            {
+                                // Preserve the user's exact input timeline: rows keep the
+                                // scripted values; only physics/camera state comes from the
+                                // live simulation. (The robot's OS keys lag ~2 ticks, so the
+                                // raw capture would shift and mangle the edited inputs.)
+                                state.Move = scripted.Move;
+                                state.Look = scripted.Look;
+                                state.Jump = scripted.Jump;
+                                state.Interact = scripted.Interact;
+                                state.CameraPan = scripted.CameraPan;
+                                state.CameraTilt = scripted.CameraTilt;
+                            }
+                        }
+
+                        if (record)
+                            _macroSystem.RecordTick(_timeController.CurrentTick, state);
                     }
                 }
 
@@ -449,7 +475,9 @@ namespace FlippingIsHardTAS
             _cachedRb = _gameObjectFinder.GetCachedPlayerRigidbody();
             RewindToTick(cutTick);
 
-            _macroSystem.EnterEditMode(cutTick);
+            // No truncation: the robot overwrites rows in place as it advances, so the
+            // user's input timeline never disappears (and survives an abort).
+            _macroSystem.BeginRobotRecording();
             DisableMouseDevice(); // keyboard must stay live for SendInput; mouse must not pollute look
             ApplyRobotSpeed();
             _resimDiagCount = 0;
@@ -912,6 +940,11 @@ namespace FlippingIsHardTAS
         {
             if (_timeController != null && !_timeController.IsPaused)
                 _timeController.TogglePause();
+        }
+
+        public void EditorTogglePause()
+        {
+            _timeController?.TogglePause();
         }
 
         /// <summary>
