@@ -105,6 +105,27 @@ This game's physics + networked prediction (FishNet) and its internal *stuck/sli
 
 ---
 
+## Updating after a game patch
+
+The mod's `.dll` is **version-agnostic** — the game's input API (`PlayerInputHandler`,
+`PlayerInputData`, `PlayerButtons`, `Vector2SByte`) has identical signatures across versions,
+so the same build runs on the demo and newer releases.
+
+What is **not** version-agnostic is BepInEx's IL2CPP **interop** (`BepInEx/interop/`): it's
+generated from the game's metadata and the internal method tokens shift every game update.
+
+> ⚠️ **After the game updates, let BepInEx regenerate the interop.** Delete the
+> `BepInEx/interop/` folder (or reinstall BepInEx) and launch the game once. If you keep a
+> stale interop from a previous version, the mod will **crash at `PlayerInputHandler.IsHeld` /
+> `WasPressed`** because the old method tokens now point at the wrong native methods.
+
+Do **not** copy a whole `BepInEx` folder from an older install onto a newer game — that's
+exactly what carries the stale interop. Building the mod against a specific version (via
+`setup-libs.ps1 -GamePath "..."`) is only a compile-time convenience; it does not bake any
+version-specific tokens into the `.dll`.
+
+---
+
 ## License
 
 MIT — do whatever you want, credits appreciated.

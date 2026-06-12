@@ -41,7 +41,7 @@ namespace FlippingIsHardTAS
             if (Time.unscaledTime < _playerSearchCooldown)
                 return null;
             
-            // Method 1: Try to find by tag
+            // Method 1: by tag (fast path; works on v0.11)
             try
             {
                 _cachedPlayer = GameObject.FindWithTag("Player");
@@ -51,11 +51,28 @@ namespace FlippingIsHardTAS
                     return _cachedPlayer;
                 }
             }
-            catch (Exception)
+            catch (Exception) { /* Silent catch */ }
+
+            // Method 2: by component — version-agnostic. The tag/structure changed in v0.12
+            // ("Player not found" with the tag lookup), but the player still carries
+            // EHS.PlayerInputHandler / EHS.PlayerMovement. Find it by those instead.
+            try
             {
-                // Silent catch
+                var handler = UnityEngine.Object.FindObjectOfType<EHS.PlayerInputHandler>();
+                Component comp = handler != null
+                    ? (Component)handler
+                    : UnityEngine.Object.FindObjectOfType<EHS.PlayerMovement>();
+                if (comp != null)
+                {
+                    _cachedPlayer = comp.gameObject;
+                    _cachedPlayerRigidbody = _cachedPlayer.GetComponent<Rigidbody>()
+                                             ?? _cachedPlayer.GetComponentInParent<Rigidbody>()
+                                             ?? _cachedPlayer.GetComponentInChildren<Rigidbody>();
+                    return _cachedPlayer;
+                }
             }
-            
+            catch (Exception) { /* Silent catch */ }
+
             // Si llegamos aquÃ­, no lo encontrÃ³, aplicamos cooldown de 2 segundos antes de volver a buscar
             _playerSearchCooldown = Time.unscaledTime + SEARCH_COOLDOWN_DURATION;
             _cachedPlayerRigidbody = null;
@@ -72,7 +89,7 @@ namespace FlippingIsHardTAS
             if (Time.unscaledTime < _cameraSearchCooldown)
                 return null;
             
-            // Method 1: Try to find by tag
+            // Method 1: by tag
             try
             {
                 _cachedCamera = GameObject.FindWithTag("MainCamera");
@@ -81,11 +98,19 @@ namespace FlippingIsHardTAS
                     return _cachedCamera;
                 }
             }
-            catch (Exception)
+            catch (Exception) { /* Silent catch */ }
+
+            // Method 2: Camera.main — version-agnostic fallback
+            try
             {
-                // Silent catch
+                if (Camera.main != null)
+                {
+                    _cachedCamera = Camera.main.gameObject;
+                    return _cachedCamera;
+                }
             }
-            
+            catch (Exception) { /* Silent catch */ }
+
             // Si llegamos aquÃ­, no lo encontrÃ³, aplicamos cooldown de 2 segundos antes de volver a buscar
             _cameraSearchCooldown = Time.unscaledTime + SEARCH_COOLDOWN_DURATION;
             return null;

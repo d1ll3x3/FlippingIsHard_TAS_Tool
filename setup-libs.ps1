@@ -1,5 +1,17 @@
 # Setup script to find and copy BepInEx and Unity DLLs
-# Works across different Steam library locations
+# Works across different Steam library locations and game versions.
+#
+# Usage:
+#   .\setup-libs.ps1                       # auto-detect the installed game
+#   .\setup-libs.ps1 -GamePath "X:\...\Flipping is Hard"   # build against a specific install
+#
+# NOTE: the copied interop DLLs are only build-time references. The game's input API is
+# identical across versions, so the resulting .dll works on every version — provided each
+# player's BepInEx has REGENERATED its interop for their game version (see README:
+# "Updating after a game patch"). A stale interop crashes at PlayerInputHandler.IsHeld.
+param(
+    [string]$GamePath
+)
 
 Write-Host "Setting up BepInEx TAS Tool build environment..." -ForegroundColor Cyan
 Write-Host ""
@@ -9,23 +21,26 @@ if (-not (Test-Path "lib")) {
     New-Item -ItemType Directory -Path "lib" | Out-Null
 }
 
-# Find game installation
+# Find game installation. The product folder is "Flipping is Hard Demo" on the demo and
+# "Flipping is Hard" once the demo tag is dropped — search both, plus any "- copia" variants.
 $gamePath = $null
-$searchPaths = @(
-    "I:\SteamLibrary\steamapps\common\Flipping is Hard Demo",
-    "C:\SteamLibrary\steamapps\common\Flipping is Hard Demo",
-    "D:\SteamLibrary\steamapps\common\Flipping is Hard Demo",
-    "E:\SteamLibrary\steamapps\common\Flipping is Hard Demo",
-    "C:\Program Files\Steam\steamapps\common\Flipping is Hard Demo",
-    "C:\Program Files (x86)\Steam\steamapps\common\Flipping is Hard Demo",
-    "D:\Program Files\Steam\steamapps\common\Flipping is Hard Demo",
-    "D:\Program Files (x86)\Steam\steamapps\common\Flipping is Hard Demo"
-)
+if ($GamePath) {
+    if (Test-Path "$GamePath\BepInEx") { $gamePath = $GamePath }
+    else { Write-Host "ERROR: no BepInEx under -GamePath '$GamePath'" -ForegroundColor Red; exit 1 }
+}
+else {
+    $drives = @("C","D","E","F","G","H","I","J","K")
+    $names  = @("Flipping is Hard Demo", "Flipping is Hard")
+    $roots  = @("SteamLibrary\steamapps\common",
+                "Program Files\Steam\steamapps\common",
+                "Program Files (x86)\Steam\steamapps\common")
+    $candidates = @()
+    foreach ($d in $drives) { foreach ($r in $roots) { foreach ($n in $names) {
+        $candidates += "$($d):\$r\$n"
+    } } }
 
-foreach ($path in $searchPaths) {
-    if (Test-Path "$path\BepInEx") {
-        $gamePath = $path
-        break
+    foreach ($path in $candidates) {
+        if (Test-Path "$path\BepInEx\interop") { $gamePath = $path; break }
     }
 }
 

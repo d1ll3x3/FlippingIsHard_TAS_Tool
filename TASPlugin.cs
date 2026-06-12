@@ -2,13 +2,12 @@ using BepInEx;
 using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
 using Il2CppInterop.Runtime.Injection;
-using HarmonyLib;
 using UnityEngine;
 using System;
 
 namespace FlippingIsHardTAS
 {
-    [BepInPlugin("com.flippingishard.tas", "Flipping is Hard TAS", "1.0.0")]
+    [BepInPlugin("com.flippingishard.tas", "Flipping is Hard TAS", "2.0.1")]
     public class TASPlugin : BasePlugin
     {
         internal static ManualLogSource Logger { get; private set; }
@@ -21,20 +20,15 @@ namespace FlippingIsHardTAS
             Logger.LogInfo("Flipping is Hard TAS plugin loaded!");
             Logger.LogInfo("Controls: Shift+R (Save), R (Teleport), F (Fly Mode)");
 
+            // NOTE: we intentionally do NOT Harmony-patch any IL2CPP game method. The old
+            // GameInputPatch hooked PlayerInputHandler.IsHeld/WasPressed/MoveInput/LookInput,
+            // and the native detour for those crashed the game on save-load in v0.12. The
+            // replay doesn't need them: the trajectory comes from per-tick STATE injection
+            // (OnPrePhysicsSimulation) and inputs from rawData FIELD writes (resolved by
+            // name — stable across versions). No method patching = works on all versions.
+
             try
             {
-                var harmony = new Harmony("com.flippingishard.tas.patches");
-
-                // Apply the standard input patches (these are stable and always valid)
-                harmony.PatchAll(typeof(GameInputPatch));
-                Logger.LogInfo("GameInputPatch applied.");
-
-                // NOTE: do NOT Harmony-patch NetworkBehaviour.Reconcile_Client_Start —
-                // the il2cpp trampoline for it throws NullReferenceException on every
-                // call, which both spams the log and corrupts FishNet's prediction
-                // pipeline (random teleports). If reconciliation ever needs blocking,
-                // it must be done through FishNet's managed API instead.
-
                 // Register our custom MonoBehaviour with IL2CPP before using AddComponent
                 ClassInjector.RegisterTypeInIl2Cpp<TASBehaviour>();
 

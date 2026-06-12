@@ -67,9 +67,7 @@ namespace FlippingIsHardTAS
                 
                 _bindMenu = bindMenu;
                 _editor = new TASEditorRenderer(this);
-                GameInputPatch.MacroSystem = _macroSystem;
-                FishNetReconcilePatch.MacroSystem = _macroSystem;
-                
+
                 ApplyDeterministicSettings();
                 SubscribeToFishNet();
                 
@@ -323,8 +321,8 @@ namespace FlippingIsHardTAS
                 if (!enabled || !_isInGame) return;
                 if (_cachedRb == null) return;
                 if (_macroSystem == null || !_macroSystem.IsPlaying) return;
-                // Beyond the greenzone the recorded physics state is stale (inputs were edited):
-                // inject only inputs (via GameInputPatch) and let PhysX resimulate.
+                // Every recorded tick is valid state (no resim), so this always runs during
+                // playback: inject the recorded rigidbody state before PhysX → bit-perfect.
                 if (_timeController.CurrentTick > _macroSystem.GreenzoneEnd) return;
 
                 _cachedRb.position        = _macroSystem.GetCurrentPlayerPosition();
@@ -341,11 +339,11 @@ namespace FlippingIsHardTAS
         private void OnPostTick() { }
 
         /// <summary>
-        /// Fires right before FishNet processes the tick (replicates/movement logic).
-        /// The game's native movement code reads PlayerInputHandler.rawData directly
-        /// (a field — Harmony can't intercept that), so during playback we overwrite
-        /// the field with the recorded inputs. Without this, input-only resimulation
-        /// gets zero input (devices are disabled during playback).
+        /// Fires right before FishNet processes the tick. The game reads input from the
+        /// PlayerInputHandler.rawData FIELD (resolved by name — stable across game versions,
+        /// and no IL2CPP method patching), so during playback we write the recorded inputs
+        /// there. The trajectory itself comes from state injection (OnPrePhysicsSimulation);
+        /// this keeps the game's button/animation reads in sync with the replay.
         /// </summary>
         private void OnPreTick()
         {

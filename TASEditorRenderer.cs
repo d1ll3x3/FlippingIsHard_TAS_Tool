@@ -121,9 +121,6 @@ namespace FlippingIsHardTAS
         private GUIStyle _styleCell, _styleCellOn, _styleHeader;
         private bool _stylesReady = false;
 
-        private CursorLockMode _prevLock;
-        private bool _prevCursorVisible;
-
         public TASEditorRenderer(TASController controller)
         {
             _controller = controller;
@@ -148,9 +145,6 @@ namespace FlippingIsHardTAS
             _isVisible = true;
             IsVisibleGlobally = true;
             _controller.EditorPauseGame();
-
-            _prevLock = Cursor.lockState;
-            _prevCursorVisible = Cursor.visible;
 
             var macro = _controller.MacroSystem;
             if (macro != null && macro.HasRecordedData)
@@ -189,8 +183,12 @@ namespace FlippingIsHardTAS
             IsVisibleGlobally = false;
             IsTextFieldFocused = false;
             _activeField = null;
-            Cursor.lockState = _prevLock;
-            Cursor.visible = _prevCursorVisible;
+            // Hand the cursor back FREE. In gameplay the game re-locks it every frame (for
+            // mouse-look); at the main menu it must stay free so you can click. Restoring the
+            // state captured at Open time re-locked it at the menu after a scene change —
+            // that was the "lost cursor in the menu" bug.
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
         }
 
         private void CenterOn(ulong tick)

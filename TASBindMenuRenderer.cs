@@ -353,10 +353,12 @@ namespace FlippingIsHardTAS
                 } catch { }
             }
 
-            // Only re-lock cursor if game is still running (not at end screen)
-            bool gameEnded = false;
-            try { gameEnded = EHS.GameManager.IsGameEnded; } catch { }
-            if (!gameEnded)
+            // Only re-lock the cursor if we're actually IN GAMEPLAY (a player exists). At the
+            // main menu / end screen there's no player and the cursor must stay free, or you
+            // can't click anything ("lost cursor in the menu" bug).
+            bool inGameplay = false;
+            try { inGameplay = !EHS.GameManager.IsGameEnded && _gameObjectFinder.FindPlayer() != null; } catch { }
+            if (inGameplay)
             {
                 Cursor.lockState = CursorLockMode.Locked;
                 Cursor.visible = false;
