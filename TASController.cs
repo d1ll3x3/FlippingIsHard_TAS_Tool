@@ -443,6 +443,13 @@ namespace FlippingIsHardTAS
         }
         
         private bool _wasGameEnded = false;
+        private float _lastFwdNavTime = -1f;
+
+        /// <summary>True if any gameplay key (move/jump/interact) is physically held right now.</summary>
+        private bool GameplayKeyHeld()
+            => UnityEngine.Input.GetKey(KeyCode.W) || UnityEngine.Input.GetKey(KeyCode.A)
+            || UnityEngine.Input.GetKey(KeyCode.S) || UnityEngine.Input.GetKey(KeyCode.D)
+            || UnityEngine.Input.GetKey(KeyCode.Space) || UnityEngine.Input.GetKey(KeyCode.E);
 
         private void CheckGameEnd()
         {
@@ -588,7 +595,30 @@ namespace FlippingIsHardTAS
                 _timeController.SetSlowMoBoost(TASConfig.Settings.SlowMoBoost.IsPressed());
 
             if (isFrameAdvancePressed)
-                _timeController.TickFrameAdvance(justPressed: !_wasFrameAdvancePressed);
+            {
+                bool justPressed = !_wasFrameAdvancePressed;
+                bool editing = (_macroSystem.IsEditMode || _macroSystem.IsRecording) && _timeController.IsPaused;
+                bool overExisting = editing && _timeController.CurrentTick < _macroSystem.MaxTick;
+
+                if (overExisting && !GameplayKeyHeld())
+                {
+                    // NAVIGATE forward through recorded frames (non-destructive replay-step),
+                    // with hold-repeat. No gameplay key held = scrubbing, nothing is lost.
+                    bool step = justPressed;
+                    float now = Time.unscaledTime;
+                    if (!step) { if (now - _lastFwdNavTime >= 0.1f) { step = true; _lastFwdNavTime = now; } }
+                    else _lastFwdNavTime = now;
+                    if (step) RewindToTick(_timeController.CurrentTick + 1);
+                }
+                else
+                {
+                    // RECORD: you're holding an input over existing data (fork — drop the stale
+                    // continuation once), or you're at the front, or it's a replay step.
+                    if (overExisting && justPressed)
+                        _macroSystem.TruncateAt(_timeController.CurrentTick + 1);
+                    _timeController.TickFrameAdvance(justPressed: justPressed);
+                }
+            }
 
             bool isRewindPressed = TASConfig.Settings.RewindTick.IsPressed();
             bool canRewind = _timeController.IsPaused && !_macroSystem.IsEditMode && _timeController.CurrentTick > 0;
@@ -665,10 +695,21 @@ namespace FlippingIsHardTAS
             _timeController?.TogglePause();
         }
 
-        /// <summary>Advances exactly one tick (editor button). Only while paused.</summary>
+        /// <summary>
+        /// Steps one tick forward (editor button). Only while paused. In Edit Mode, navigates
+        /// non-destructively through recorded frames (replay-step) when over existing data;
+        /// records a live tick only at the front. (Live editing is done by holding a gameplay
+        /// key with the frame-advance hotkey.)
+        /// </summary>
         public void EditorStepForward()
         {
             if (_timeController == null || !_timeController.IsPaused) return;
+            if ((_macroSystem.IsEditMode || _macroSystem.IsRecording)
+                && _timeController.CurrentTick < _macroSystem.MaxTick)
+            {
+                RewindToTick(_timeController.CurrentTick + 1);   // navigate, non-destructive
+                return;
+            }
             _timeController.TickFrameAdvance(justPressed: true);
         }
 
@@ -889,13 +930,14 @@ namespace FlippingIsHardTAS
         }
         
         /// <summary>
-        /// Rewinds during recording/Edit Mode: restores state + sets cut point for deferred truncation.
+        /// Rewinds during recording/Edit Mode — NON-destructive: just moves the cursor back
+        /// and restores state. The forward ticks stay; they're only dropped when you actually
+        /// re-record over them (fork-on-modify in FixedUpdate). So you can step back freely
+        /// without losing anything until you change an input.
         /// </summary>
         private void RewindRecording(ulong targetTick)
         {
             RewindToTick(targetTick);
-            // Immediately truncate data from targetTick+1 onward (same as EnterEditMode)
-            _macroSystem.TruncateAt(targetTick + 1);
         }
         
         /// <summary>
@@ -1070,6 +1112,22 @@ namespace FlippingIsHardTAS
                 _macroSystem.GreenzoneEnd,
                 (ulong)_macroSystem.RecordedInputs.Count
             );
+
+            // Live held input for the frame-by-frame input display (what gets recorded
+            // on the next frame-advance tick). Read the same rawData the recorder reads.
+            try
+            {
+                var handler = _gameObjectFinder.FindPlayerTransform()?.GetComponent<EHS.PlayerInputHandler>();
+                if (handler != null)
+                {
+                    var rd = handler.rawData;
+                    _overlayRenderer.UpdateLiveInput(
+                        rd.moveInputSBytes.X, rd.moveInputSBytes.Y,
+                        (rd.Buttons.HeldMask & 4) != 0, (rd.Buttons.HeldMask & 8) != 0,
+                        rd.lookInputSBytes.X, rd.lookInputSBytes.Y);
+                }
+            }
+            catch { }
         }
         
         private void ApplyDeterministicSettings()

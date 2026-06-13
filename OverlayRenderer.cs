@@ -54,6 +54,18 @@ namespace FlippingIsHardTAS
         private ulong _greenzoneEnd = 0;
         private ulong _recordedCount = 0;   // number of valid recorded ticks (no-data excluded)
 
+        // Live held input — what will be recorded on the next frame-advance tick.
+        private int _liveMoveX, _liveMoveY, _liveLookX, _liveLookY;
+        private bool _liveJump, _liveInteract;
+
+        /// <summary>Feeds the live held input (raw sbytes / button state) for the input display.</summary>
+        public void UpdateLiveInput(int moveX, int moveY, bool jump, bool interact, int lookX, int lookY)
+        {
+            _liveMoveX = moveX; _liveMoveY = moveY;
+            _liveJump = jump;   _liveInteract = interact;
+            _liveLookX = lookX; _liveLookY = lookY;
+        }
+
         public void UpdateData(Vector3 pos, float speed, bool hasSaved, bool isRecording,
                                bool isPlaying, bool isPaused, ulong currentTick,
                                bool isSlowMo = false, bool isSlowMoBoost = false, bool isFastForward = false, bool isEditMode = false,
@@ -97,6 +109,8 @@ namespace FlippingIsHardTAS
             EnsureStyles();
             DrawControls();
             DrawCoords();
+            if (_isRecording || _isEditMode)
+                DrawInputDisplay();
         }
 
         private void EnsureStyles()
@@ -180,11 +194,13 @@ namespace FlippingIsHardTAS
             Color stateColor;
             if (_isEditMode)
             {
-                stateStr = "✎ EDIT (REC)"; stateColor = new Color(1f, 0.5f, 0f, 1f);
+                stateStr = _isPaused ? "✎ EDIT — FRAME-STEP" : "✎ EDIT (REC)";
+                stateColor = new Color(1f, 0.5f, 0f, 1f);
             }
             else if (_isRecording)
             {
-                stateStr = "● REC"; stateColor = _recColor;
+                stateStr = _isPaused ? "● REC — FRAME-STEP" : "● REC";
+                stateColor = _recColor;
             }
             else if (_isPlaying && _isPaused)
             {
@@ -322,6 +338,87 @@ namespace FlippingIsHardTAS
             cy += labelH;
             GUI.Label(new Rect(cx, cy, coordW - 24f * sc, labelH), _cachedCoordsStr, _styleText);
         }
+
+        // ── Live input display (frame-by-frame TAS) ──────────────────────
+        private void DrawInputDisplay()
+        {
+            var s = TASConfig.Settings;
+            float sc = Scale;
+            float box = 30f * sc;
+            float gap = 4f * sc;
+            float padIn = 8f * sc;
+            float titleH = 18f * sc;
+            float vgap = 8f * sc;                    // clear gap between sections
+            bool frameStep = _isPaused;              // paused while recording/editing = frame-step
+            float hintH = frameStep ? 20f * sc : 0f;
+
+            float gridW = box * 3 + gap * 2;         // A S D row
+            float jumpW = box * 1.7f;
+            float panelW = padIn * 2 + gridW + gap * 2 + jumpW;
+
+            // Panel contains only title + the two key rows. The hint is drawn OUTSIDE,
+            // below the box, so it can never be clipped by the panel edge.
+            float rowsH = box * 2 + gap;
+            float panelH = padIn + titleH + vgap + rowsH + padIn;
+
+            float x = Screen.width / 2f - panelW / 2f;
+            float totalH = panelH + (frameStep ? vgap + hintH : 0f);
+            float y = Screen.height - totalH - 20f;
+
+            DrawBox(x, y, panelW, panelH);
+
+            float cx = x + padIn;
+            float cy = y + padIn;
+
+            _styleSection.normal.textColor = _sectionColor;
+            GUI.Label(new Rect(cx, cy, panelW - padIn * 2, titleH), "— INPUT (next tick) —", _styleSection);
+            GUI.color = Color.white;
+            cy += titleH + vgap;
+
+            // Movement: W centered over A/S/D (sbyte range -127..127, >16 = pressed)
+            DrawKeyBox(cx + box + gap, cy, box, "W", _liveMoveY > 16);
+            float row2 = cy + box + gap;
+            DrawKeyBox(cx,                 row2, box, "A", _liveMoveX < -16);
+            DrawKeyBox(cx + box + gap,     row2, box, "S", _liveMoveY < -16);
+            DrawKeyBox(cx + (box + gap)*2, row2, box, "D", _liveMoveX > 16);
+
+            // Jump + Interact to the right
+            float rx = cx + gridW + gap * 2;
+            DrawKeyBox(rx, cy,   jumpW, box, "JUMP", _liveJump);
+            DrawKeyBox(rx, row2, jumpW, box, "INT",  _liveInteract);
+
+            // Hint OUTSIDE/below the box.
+            if (frameStep)
+            {
+                _styleKey.normal.textColor = _keyColor;
+                GUI.Label(new Rect(x, y + panelH + vgap, panelW + 240f * sc, hintH),
+                          $"FRAME-STEP: hold keys · [{s.FrameAdvance}] +1 · [{s.RewindTick}] back", _styleKey);
+                GUI.color = Color.white;
+            }
+        }
+
+        private void DrawKeyBox(float x, float y, float w, float h, string label, bool active)
+        {
+            Color orig = GUI.color;
+            // Solid fill (DrawTexture on the white texture) — guarantees a visible colour,
+            // unlike tinting GUI.skin.box which rendered near-black here. Pressed = the TICK
+            // counter's green; released = dim grey.
+            GUI.color = active ? _savedColor : new Color(0.22f, 0.22f, 0.22f, 0.85f);
+            GUI.DrawTexture(new Rect(x, y, w, h), Texture2D.whiteTexture);
+            GUI.color = Color.white;
+
+            var prevAlign = _styleKey.alignment;
+            var prevCol = _styleKey.normal.textColor;
+            _styleKey.alignment = TextAnchor.MiddleCenter;
+            _styleKey.normal.textColor = active ? Color.black : new Color(0.8f, 0.8f, 0.8f);
+            GUI.Label(new Rect(x, y, w, h), label, _styleKey);
+            _styleKey.alignment = prevAlign;
+            _styleKey.normal.textColor = prevCol;
+            GUI.color = orig;
+        }
+
+        private void DrawKeyBox(float x, float y, float size, string label, bool active)
+            => DrawKeyBox(x, y, size, size, label, active);
 
         private void DrawBox(float x, float y, float w, float h)
         {

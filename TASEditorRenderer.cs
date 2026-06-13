@@ -553,7 +553,9 @@ namespace FlippingIsHardTAS
                     BackupMacroOnce(macro);
                     PushUndo(macro);
                     macro.SetInputAt(tick, s.Move, !s.Jump, s.Interact, s.CameraPan, s.CameraTilt);
+                    macro.TruncateAt(tick + 1);   // editing an input forks: drop the stale continuation
                     if (_selectedTick == (long)tick) LoadSelectionIntoFields();
+                    SetStatus($"Jump edited at {tick} — forward dropped. Re-record from here.");
                 }
             }
             cx += ColW[3];
@@ -565,7 +567,9 @@ namespace FlippingIsHardTAS
                     BackupMacroOnce(macro);
                     PushUndo(macro);
                     macro.SetInputAt(tick, s.Move, s.Jump, !s.Interact, s.CameraPan, s.CameraTilt);
+                    macro.TruncateAt(tick + 1);   // editing an input forks: drop the stale continuation
                     if (_selectedTick == (long)tick) LoadSelectionIntoFields();
+                    SetStatus($"Interact edited at {tick} — forward dropped. Re-record from here.");
                 }
             }
             GUI.backgroundColor = Color.white;
@@ -783,22 +787,24 @@ namespace FlippingIsHardTAS
             BackupMacroOnce(macro);
             PushUndo(macro);
 
-            // Move/Jump/Interact: data-only edit on the selected tick.
+            // Movement change forks: edit the input and drop the stale continuation
+            // (re-record forward from here). Camera-only change just re-aims and holds.
+            bool moveChanged = mx != s.Move.x || my != s.Move.y;
             macro.SetInputAt((ulong)_selectedTick, new Vector2(mx, my), s.Jump, s.Interact, s.CameraPan, s.CameraTilt);
 
-            // Camera: aim it and have it STAY — propagate the new pan/tilt from this tick to
-            // the end (a later edit at a higher tick overrides downstream). The replay renders
-            // the camera from these orbital axes, so the view holds.
             bool camChanged = !Mathf.Approximately(pan, s.CameraPan) || !Mathf.Approximately(tilt, s.CameraTilt);
             if (camChanged)
-            {
                 macro.SetCameraFrom((ulong)_selectedTick, pan, tilt);
-                SetStatus($"Camera set to {pan:F1}/{tilt:F1} from tick {_selectedTick} onward.");
-            }
-            else
+
+            if (moveChanged)
             {
-                SetStatus($"Tick {_selectedTick} inputs edited (data only — re-record from here to change the run).");
+                macro.TruncateAt((ulong)_selectedTick + 1);
+                SetStatus($"Move edited at {_selectedTick} — forward dropped. Re-record from here.");
             }
+            else if (camChanged)
+                SetStatus($"Camera set to {pan:F1}/{tilt:F1} from tick {_selectedTick} onward.");
+            else
+                SetStatus($"Tick {_selectedTick} unchanged.");
         }
 
         private static bool TryParseFloat(string str, out float value)
