@@ -66,6 +66,9 @@ namespace FlippingIsHardTAS
                 _macroSystem = new InputMacroSystem();
                 
                 _bindMenu = bindMenu;
+                // Closing the menu re-enables the input devices unconditionally — if a
+                // replay is running they must be locked again immediately.
+                _bindMenu.OnMenuClosed = () => _macroSystem?.ReapplyDeviceLock();
                 _editor = new TASEditorRenderer(this);
 
                 ApplyDeterministicSettings();
@@ -86,6 +89,13 @@ namespace FlippingIsHardTAS
         
         private bool _isInGame = false;
 
+        // Quick restart: the pause applied on scene reload gets overridden by the game,
+        // which resets Time.timeScale while it finishes loading. Once the new player
+        // exists, hold "paused at tick 0" for a short window until loading settles.
+        private bool _restartPending = false;
+        private float _restartHoldUntil = 0f;
+        private const float RESTART_HOLD_SECONDS = 2.5f;
+
         public void Update()
         {
             try
@@ -102,6 +112,8 @@ namespace FlippingIsHardTAS
                     if (!_isInGame && wasInGame)
                     {
                         TASPlugin.Logger.LogInfo("TAS: Exited to menu, making mod dormant.");
+                        _restartPending = false;
+                        _restartHoldUntil = 0f;
                         _editor?.ForceClose();
                         _timeController?.ResetTick();
                         _macroSystem?.Clear();
@@ -145,6 +157,29 @@ namespace FlippingIsHardTAS
                     }
                     catch { }
                 }
+
+                // Quick restart: once the new player has spawned, hold paused-at-tick-0
+                // for a short window — the game keeps resetting Time.timeScale (and thus
+                // running ticks) until "Full game load completed".
+                if (_restartPending && _gameObjectFinder.FindPlayerTransform() != null)
+                {
+                    _restartPending = false;
+                    _restartHoldUntil = Time.unscaledTime + RESTART_HOLD_SECONDS;
+                    TASPlugin.Logger.LogInfo("TAS: QuickRestart — holding paused at tick 0 while the game finishes loading.");
+                }
+                if (_restartHoldUntil > 0f)
+                {
+                    if (Time.unscaledTime < _restartHoldUntil)
+                    {
+                        if (!_timeController.IsPaused) _timeController.TogglePause();
+                        if (_timeController.CurrentTick != 0) _timeController.SetTick(0);
+                    }
+                    else
+                        _restartHoldUntil = 0f;
+                }
+
+                // The game can reset Time.timeScale behind our back — keep the pause authoritative.
+                _timeController.EnforcePause();
 
                 HandleHotkeys();
 
@@ -309,6 +344,9 @@ namespace FlippingIsHardTAS
             ApplyDeterministicSettings();
             if (_timeController != null && !_timeController.IsPaused)
                 _timeController.TogglePause();
+            // The pause above gets overridden while the game finishes loading —
+            // re-applied (with tick 0) once the new player spawns; see Update().
+            _restartPending = true;
         }
 
         private int _prePhysicsCallCount = 0;

@@ -119,6 +119,17 @@ namespace FlippingIsHardTAS
                 Time.timeScale = 1f;
         }
 
+        /// <summary>
+        /// Re-asserts the pause if something external reset Time.timeScale. The game does
+        /// this while it finishes loading after a quick restart — our IsPaused flag stayed
+        /// true but the game ran anyway (and the tick counter kept counting).
+        /// </summary>
+        public void EnforcePause()
+        {
+            if (IsPaused && _framesToAdvance == 0 && Time.timeScale != 0f)
+                ApplyTimeScale();
+        }
+
         // ── FixedUpdate ───────────────────────────────────────────────────
         // Called from TASController.FixedUpdate (runs every physics step).
         public void FixedUpdate()

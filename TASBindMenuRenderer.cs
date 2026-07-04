@@ -16,8 +16,24 @@ namespace FlippingIsHardTAS
         private Vector3 _menuCameraPos;
         private Quaternion _menuCameraRot;
 
+        private const int WINDOW_ID = 8494;
+
         private bool _isVisible = false;
         private Rect _windowRect = new Rect(Screen.width / 2 - 260, Screen.height / 2 - 325, 520, 650);
+
+        // Manual window dragging — GUI.DragWindow relies on the broken IMGUI event pipeline
+        private bool _dragging = false;
+        private Vector2 _dragOffset;
+        private bool _wasCloseKeyHeld = false;
+
+        // All rebindable action ids — used to clear duplicate binds on assign
+        private static readonly string[] AllActions =
+        {
+            "Save", "Teleport", "Record", "Play", "EditMacro", "RewindTick", "Menu",
+            "Pause", "SlowMo", "SlowMoBoost", "FrameAdvance", "ResetTick", "FastForward", "OpenEditor"
+        };
+
+        private static KeyCode[] _allKeyCodes;
 
         private GUIStyle _titleStyle;
         private GUIStyle _sectionStyle;
@@ -82,6 +98,13 @@ namespace FlippingIsHardTAS
                 // Clone all settings into temp copy
                 _tempSettings = CloneSettings(TASConfig.Settings);
                 _listeningAction = null;
+                _dragging = false;
+                // The key that opened the menu is still held — require a fresh press to close
+                _wasCloseKeyHeld = true;
+
+                // Keep the window on-screen if the resolution changed since construction
+                _windowRect.x = Mathf.Clamp(_windowRect.x, 0, Mathf.Max(0, Screen.width - _windowRect.width));
+                _windowRect.y = Mathf.Clamp(_windowRect.y, 0, Mathf.Max(0, Screen.height - _windowRect.height));
             }
         }
 
@@ -134,86 +157,176 @@ namespace FlippingIsHardTAS
                 Camera.main.transform.SetPositionAndRotation(_menuCameraPos, _menuCameraRot);
             }
 
-            if (Event.current.type == EventType.Repaint)
-                _clickHandledThisFrame = false;
-
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
 
             InitStyles();
 
-            // Key capture
-            if (_listeningAction != null)
+            // All input is read from legacy Input (the IMGUI event pipeline is broken in
+            // this game), and only once per frame — on the Repaint pass.
+            if (Event.current.type == EventType.Repaint)
             {
-                Event e = Event.current;
+                _clickHandledThisFrame = false;
 
-                if (Input.GetKeyDown(KeyCode.Escape))
+                bool wasListening = _listeningAction != null;
+                if (wasListening)
+                    PollKeyCapture();
+
+                // Close with Esc or the menu key itself (edge-detected; not while capturing)
+                bool closeHeld = Input.GetKey(KeyCode.Escape) || TASConfig.Settings.OpenBindMenu.IsPressed();
+                if (!wasListening && closeHeld && !_wasCloseKeyHeld)
                 {
-                    _listeningAction = null;
-                    if (e.type != EventType.Repaint && e.type != EventType.Layout) e.Use();
+                    _wasCloseKeyHeld = closeHeld;
+                    CloseMenu();
+                    return;
                 }
-                else if (e.type == EventType.KeyDown || e.type == EventType.MouseDown)
-                {
-                    KeyCode key = KeyCode.None;
-                    if (e.type == EventType.KeyDown)
-                        key = e.keyCode;
-                    else if (e.type == EventType.MouseDown)
-                    {
-                        if      (e.button == 0) key = KeyCode.Mouse0;
-                        else if (e.button == 1) key = KeyCode.Mouse1;
-                        else if (e.button == 2) key = KeyCode.Mouse2;
-                        else if (e.button == 3) key = KeyCode.Mouse3;
-                        else if (e.button == 4) key = KeyCode.Mouse4;
-                    }
+                _wasCloseKeyHeld = closeHeld;
 
-                    if (key != KeyCode.None && key != KeyCode.Mouse0 && key != KeyCode.Mouse1 && key != KeyCode.Escape)
-                    {
-                        if (key != KeyCode.LeftShift  && key != KeyCode.RightShift  &&
-                            key != KeyCode.LeftControl && key != KeyCode.RightControl &&
-                            key != KeyCode.LeftAlt     && key != KeyCode.RightAlt)
-                        {
-                            KeyCode mod = KeyCode.None;
-                            if (e.shift   || Input.GetKey(KeyCode.LeftShift)   || Input.GetKey(KeyCode.RightShift))   mod = KeyCode.LeftShift;
-                            else if (e.control || Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) mod = KeyCode.LeftControl;
-                            else if (e.alt    || Input.GetKey(KeyCode.LeftAlt)     || Input.GetKey(KeyCode.RightAlt))     mod = KeyCode.LeftAlt;
-
-                            AssignKey(_listeningAction, key, mod);
-                            _listeningAction = null;
-                            e.Use();
-                        }
-                    }
-                }
+                HandleWindowDrag();
             }
 
             GUI.backgroundColor = new Color(0.15f, 0.15f, 0.15f, 1f);
-            _windowRect = GUI.Window(8494, _windowRect, _windowDelegate, "TAS KEYBINDS");
+            _windowRect = GUI.Window(WINDOW_ID, _windowRect, _windowDelegate, "TAS KEYBINDS");
             GUI.backgroundColor = _defaultBgColor;
+        }
+
+        /// <summary>
+        /// Key capture via legacy Input polling. The old capture read IMGUI KeyDown/MouseDown
+        /// events, which don't fire reliably in this game's IL2CPP build — the "Press any
+        /// key..." prompt could hang forever. Polling uses the same input path as every
+        /// other hotkey in the mod, which is known to work.
+        /// </summary>
+        private void PollKeyCapture()
+        {
+            if (Input.GetKeyDown(KeyCode.Escape))
+            {
+                _listeningAction = null;
+                return;
+            }
+
+            if (_allKeyCodes == null)
+                _allKeyCodes = (KeyCode[])Enum.GetValues(typeof(KeyCode));
+
+            foreach (var key in _allKeyCodes)
+            {
+                if (key == KeyCode.None || key == KeyCode.Escape) continue;
+                if (key == KeyCode.Mouse0 || key == KeyCode.Mouse1) continue; // reserved for clicking the UI
+                if (IsModifierKey(key)) continue; // modifiers only combine, never bind alone
+
+                bool down;
+                try { down = Input.GetKeyDown(key); } catch { continue; }
+                if (!down) continue;
+
+                KeyCode mod = KeyCode.None;
+                if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) mod = KeyCode.LeftShift;
+                else if (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) mod = KeyCode.LeftControl;
+                else if (Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt)) mod = KeyCode.LeftAlt;
+
+                AssignKey(_listeningAction, key, mod);
+                _listeningAction = null;
+                return;
+            }
+        }
+
+        private static bool IsModifierKey(KeyCode k)
+            => k == KeyCode.LeftShift || k == KeyCode.RightShift
+            || k == KeyCode.LeftControl || k == KeyCode.RightControl
+            || k == KeyCode.LeftAlt || k == KeyCode.RightAlt;
+
+        private void HandleWindowDrag()
+        {
+            Vector2 m = Input.mousePosition;
+            m.y = Screen.height - m.y;
+
+            if (Input.GetMouseButtonDown(0) && !_dragging)
+            {
+                // Title bar = top strip of the window, minus the X button corner
+                var titleRect = new Rect(_windowRect.x, _windowRect.y, _windowRect.width - 44, 30);
+                if (titleRect.Contains(m))
+                {
+                    _dragging = true;
+                    _dragOffset = m - new Vector2(_windowRect.x, _windowRect.y);
+                }
+            }
+
+            if (_dragging)
+            {
+                if (!Input.GetMouseButton(0))
+                    _dragging = false;
+                else
+                {
+                    _windowRect.x = Mathf.Clamp(m.x - _dragOffset.x, -_windowRect.width + 60, Screen.width - 60);
+                    _windowRect.y = Mathf.Clamp(m.y - _dragOffset.y, 0, Screen.height - 40);
+                }
+            }
         }
 
         private void AssignKey(string action, KeyCode main, KeyCode mod)
         {
             if (_tempSettings == null) return;
+
+            // Same key+modifier on another action → unbind it there, otherwise both
+            // actions would fire on one press.
+            foreach (var other in AllActions)
+            {
+                if (other == action) continue;
+                var b = GetBind(other);
+                if (b != null && b.MainKey == main && b.Modifier == mod)
+                    SetBind(other, new KeyBind(KeyCode.None));
+            }
+
+            SetBind(action, new KeyBind(main, mod));
+        }
+
+        private KeyBind GetBind(string action)
+        {
             switch (action)
             {
-                case "Save":         _tempSettings.SavePosition = new KeyBind(main, mod); break;
-                case "Teleport":     _tempSettings.Teleport     = new KeyBind(main, mod); break;
-                case "Record":       _tempSettings.RecordMacro  = new KeyBind(main, mod); break;
-                case "Play":         _tempSettings.PlayMacro    = new KeyBind(main, mod); break;
-                case "EditMacro":    _tempSettings.EditMacro    = new KeyBind(main, mod); break;
-                case "RewindTick":   _tempSettings.RewindTick   = new KeyBind(main, mod); break;
-                case "Menu":         _tempSettings.OpenBindMenu = new KeyBind(main, mod); break;
-                case "Pause":        _tempSettings.Pause        = new KeyBind(main, mod); break;
-                case "SlowMo":       _tempSettings.SlowMo       = new KeyBind(main, mod); break;
-                case "SlowMoBoost":  _tempSettings.SlowMoBoost  = new KeyBind(main, mod); break;
-                case "FrameAdvance": _tempSettings.FrameAdvance = new KeyBind(main, mod); break;
-                case "ResetTick":    _tempSettings.ResetTick    = new KeyBind(main, mod); break;
-                case "FastForward":  _tempSettings.FastForward  = new KeyBind(main, mod); break;
-                case "OpenEditor":   _tempSettings.OpenEditor   = new KeyBind(main, mod); break;
+                case "Save":         return _tempSettings.SavePosition;
+                case "Teleport":     return _tempSettings.Teleport;
+                case "Record":       return _tempSettings.RecordMacro;
+                case "Play":         return _tempSettings.PlayMacro;
+                case "EditMacro":    return _tempSettings.EditMacro;
+                case "RewindTick":   return _tempSettings.RewindTick;
+                case "Menu":         return _tempSettings.OpenBindMenu;
+                case "Pause":        return _tempSettings.Pause;
+                case "SlowMo":       return _tempSettings.SlowMo;
+                case "SlowMoBoost":  return _tempSettings.SlowMoBoost;
+                case "FrameAdvance": return _tempSettings.FrameAdvance;
+                case "ResetTick":    return _tempSettings.ResetTick;
+                case "FastForward":  return _tempSettings.FastForward;
+                case "OpenEditor":   return _tempSettings.OpenEditor;
+                default:             return null;
+            }
+        }
+
+        private void SetBind(string action, KeyBind bind)
+        {
+            switch (action)
+            {
+                case "Save":         _tempSettings.SavePosition = bind; break;
+                case "Teleport":     _tempSettings.Teleport     = bind; break;
+                case "Record":       _tempSettings.RecordMacro  = bind; break;
+                case "Play":         _tempSettings.PlayMacro    = bind; break;
+                case "EditMacro":    _tempSettings.EditMacro    = bind; break;
+                case "RewindTick":   _tempSettings.RewindTick   = bind; break;
+                case "Menu":         _tempSettings.OpenBindMenu = bind; break;
+                case "Pause":        _tempSettings.Pause        = bind; break;
+                case "SlowMo":       _tempSettings.SlowMo       = bind; break;
+                case "SlowMoBoost":  _tempSettings.SlowMoBoost  = bind; break;
+                case "FrameAdvance": _tempSettings.FrameAdvance = bind; break;
+                case "ResetTick":    _tempSettings.ResetTick    = bind; break;
+                case "FastForward":  _tempSettings.FastForward  = bind; break;
+                case "OpenEditor":   _tempSettings.OpenEditor   = bind; break;
             }
         }
 
         private void WindowFunction(int id)
         {
+            // Both this menu and the editor hit-test the mouse manually, so make sure
+            // this window renders on top when both are open.
+            GUI.BringWindowToFront(WINDOW_ID);
+
             // Close button
             GUI.backgroundColor = new Color(0.7f, 0.2f, 0.2f, 1f);
             if (CustomButton(new Rect(_windowRect.width - 38, 5, 30, 22), "X"))
@@ -269,8 +382,9 @@ namespace FlippingIsHardTAS
             GUI.backgroundColor = new Color(0.3f, 0.3f, 0.3f, 1f);
             if (CustomButton(new Rect(cx, by, 130, 30), "Reset Defaults"))
             {
-                TASConfig.ResetToDefaults();
-                _tempSettings = CloneSettings(TASConfig.Settings);
+                // Reset only the temp copy — SAVE commits it, Cancel discards it.
+                // (Resetting TASConfig.Settings here wiped the live binds even on Cancel.)
+                _tempSettings = new TASSettings();
             }
             GUI.backgroundColor = new Color(0.3f, 0.3f, 0.3f, 1f);
             if (CustomButton(new Rect(cx + 150, by, 130, 30), "Cancel"))
@@ -285,7 +399,8 @@ namespace FlippingIsHardTAS
             }
             GUI.backgroundColor = _defaultBgColor;
 
-            GUI.DragWindow(new Rect(0, 0, _windowRect.width, 35));
+            // Dragging is handled manually in HandleWindowDrag — GUI.DragWindow relies
+            // on the broken IMGUI event pipeline and never worked here.
         }
 
         private void DrawSectionLabel(float x, ref float y, string title)
@@ -415,7 +530,6 @@ namespace FlippingIsHardTAS
             _disabledCameraScripts.Clear();
         }
 
-        // Overload without extra dummy parameter (leftover from refactor)
         private void DrawBindRow(float x, ref float y, string label, string actionId, KeyBind currentBind)
         {
             GUI.color = Color.white;
@@ -434,9 +548,5 @@ namespace FlippingIsHardTAS
             GUI.color = Color.white;
             y += 32;
         }
-
-        // Overload with extra dummy string (compiler doesn't mind, kept for clarity)
-        private void DrawBindRow(float x, ref float y, string label, string actionId, string _, KeyBind currentBind)
-            => DrawBindRow(x, ref y, label, actionId, currentBind);
     }
 }

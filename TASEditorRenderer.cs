@@ -239,8 +239,17 @@ namespace FlippingIsHardTAS
             IsTextFieldFocused = _activeField != null;
         }
 
+        /// <summary>
+        /// While the bind menu is open on top of the editor, both windows hit-test the
+        /// mouse manually with no z-order — a click on the menu would ALSO trigger any
+        /// editor button underneath (seek, toggle jump, delete...). Block all editor
+        /// input while the menu is visible.
+        /// </summary>
+        private static bool InputBlocked => TASBindMenuRenderer.IsVisibleGlobally;
+
         private void HandleWindowDrag()
         {
+            if (InputBlocked) { _dragging = false; return; }
             if (Event.current.type != EventType.Repaint) return;
 
             Vector2 m = Input.mousePosition;
@@ -277,7 +286,7 @@ namespace FlippingIsHardTAS
         private bool CustomButton(Rect rect, string text)
         {
             GUI.Box(rect, text);
-            if (_clickHandledThisFrame) return false;
+            if (InputBlocked || _clickHandledThisFrame) return false;
 
             if (Input.GetMouseButtonDown(0))
             {
@@ -308,6 +317,8 @@ namespace FlippingIsHardTAS
             GUI.color = active ? new Color(0.8f, 1f, 0.8f) : Color.white;
             GUI.Box(r, active ? value + "_" : value);
             GUI.color = Color.white;
+
+            if (InputBlocked) return value;
 
             var e = Event.current;
             if (Input.GetMouseButtonDown(0) && e.type == EventType.Repaint)
@@ -486,6 +497,7 @@ namespace FlippingIsHardTAS
         {
             // Legacy Input — IMGUI ScrollWheel events never fire in this game.
             // Only react once per frame (Repaint) and only with the mouse over the window.
+            if (InputBlocked) return;
             if (Event.current.type != EventType.Repaint) return;
 
             float scroll = Input.mouseScrollDelta.y;
@@ -661,10 +673,11 @@ namespace FlippingIsHardTAS
             if (_selectedTick < 0) { SetStatus("Select a tick first (click its number)."); return; }
             BackupMacroOnce(macro);
             PushUndo(macro);
-            macro.DeleteTickAt((ulong)_selectedTick);
+            ulong deletedTick = (ulong)_selectedTick;
+            macro.DeleteTickAt(deletedTick);
             if ((ulong)_selectedTick > macro.MaxTick) _selectedTick = (long)macro.MaxTick;
             LoadSelectionIntoFields();
-            SetStatus($"Frame {_selectedTick} deleted — later frames shifted -1 (MaxTick {macro.MaxTick}).");
+            SetStatus($"Frame {deletedTick} deleted — later frames shifted -1 (MaxTick {macro.MaxTick}).");
         }
 
         private void CopyRange(InputMacroSystem macro)

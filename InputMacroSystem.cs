@@ -106,6 +106,16 @@ namespace FlippingIsHardTAS
             EnableInputSystemDevices();
         }
         
+        /// <summary>
+        /// Re-applies the playback device lock. The bind menu enables the input devices
+        /// unconditionally when it closes; if a replay is running they must stay disabled
+        /// or real keyboard/mouse input bleeds into the playback.
+        /// </summary>
+        public void ReapplyDeviceLock()
+        {
+            if (IsPlaying) DisableInputSystemDevices();
+        }
+
         private void DisableInputSystemDevices()
         {
             try

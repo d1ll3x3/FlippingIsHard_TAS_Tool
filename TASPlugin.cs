@@ -7,7 +7,7 @@ using System;
 
 namespace FlippingIsHardTAS
 {
-    [BepInPlugin("com.flippingishard.tas", "Flipping is Hard TAS", "2.0.1")]
+    [BepInPlugin("com.flippingishard.tas", "Flipping is Hard TAS", "2.0.4")]
     public class TASPlugin : BasePlugin
     {
         internal static ManualLogSource Logger { get; private set; }
@@ -18,7 +18,7 @@ namespace FlippingIsHardTAS
             TASConfig.Load();
 
             Logger.LogInfo("Flipping is Hard TAS plugin loaded!");
-            Logger.LogInfo("Controls: Shift+R (Save), R (Teleport), F (Fly Mode)");
+            Logger.LogInfo("Controls: B (Settings), T (TAS Editor), F9 (Record), F10 (Play) — all rebindable in-game.");
 
             // NOTE: we intentionally do NOT Harmony-patch any IL2CPP game method. The old
             // GameInputPatch hooked PlayerInputHandler.IsHeld/WasPressed/MoveInput/LookInput,
