@@ -117,7 +117,9 @@ The DLL is version-agnostic, but BepInEx's IL2CPP **interop** (`BepInEx/interop/
 > ⚠️ After the game updates, delete `BepInEx/interop/` (or reinstall BepInEx) and launch the game once so it regenerates. A stale interop crashes at `PlayerInputHandler.IsHeld` / `WasPressed`.
 
 ---
-
 ## License
 
-MIT — do whatever you want, credits appreciated.
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+See the [LICENSE](LICENSE) file for details.
