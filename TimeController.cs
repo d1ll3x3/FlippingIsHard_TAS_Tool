@@ -1,4 +1,3 @@
-using System;
 using UnityEngine;
 
 namespace FlippingIsHardTAS
@@ -13,17 +12,20 @@ namespace FlippingIsHardTAS
         private int   _framesToAdvance = 0;
         private float _lastAdvanceTime = -1f;
 
-        // Slow-motion speeds
-        private const float SlowMoNormal = 0.1f;  // ×0.1
-        private const float SlowMoFast   = 0.3f;  // ×0.3  (boost)
-        private const float FastForwardScale = 3f;  // ×3
+        private const float SlowMoNormal = 0.1f;
+        private const float SlowMoFast   = 0.3f;
+        private const float FastForwardScale = 3f;
 
-        // Frame-advance hold timing
-        private const float AdvanceHoldDelay    = 0.4f;   // seconds before hold-repeat starts
-        private const float AdvanceHoldInterval = 0.1f;   // seconds between repeat ticks (10/s)
+        // Frame-advance hold timing: first press = 1 tick, then after the delay 10 ticks/s.
+        public const float HoldDelay    = 0.4f;
+        public const float HoldInterval = 0.1f;
 
-        // Actual physics tick counter
+        /// <summary>Physics ticks elapsed (only counts while time is running).</summary>
         public ulong CurrentTick { get; private set; } = 0;
+
+        /// <summary>Speed multiplier currently applied by the TAS (for the HUD).</summary>
+        public float SpeedFactor
+            => IsSlowMo ? (IsSlowMoBoost ? SlowMoFast : SlowMoNormal) : IsFastForward ? FastForwardScale : 1f;
 
         public void ResetTick()
         {
@@ -39,27 +41,27 @@ namespace FlippingIsHardTAS
 
         public void SetTick(ulong newTick) => CurrentTick = newTick;
 
-        // ── Pause ─────────────────────────────────────────────────────────
+        public void SetPaused(bool paused)
+        {
+            if (IsPaused != paused) TogglePause();
+        }
+
         public void TogglePause()
         {
             IsPaused = !IsPaused;
             if (!IsPaused) _lastAdvanceTime = -1f;
             ApplyTimeScale();
-            TASPlugin.Logger.LogInfo($"TAS Paused: {IsPaused}");
         }
 
-        // ── Frame Advance ─────────────────────────────────────────────────
         /// <summary>
-        /// Call every Update() while the FrameAdvance key is held.
-        /// justPressed = true only on the first frame the key is down.
-        /// First press → 1 tick immediately. Hold 0.4s → 10 ticks/sec.
+        /// Call every Update() while the FrameAdvance key is held (justPressed only on the
+        /// first frame). First press → 1 tick immediately; hold → 10 ticks/s after 0.4 s.
         /// </summary>
         public void TickFrameAdvance(bool justPressed)
         {
             if (!IsPaused) return;
 
             float now = Time.unscaledTime;
-
             if (justPressed)
             {
                 _framesToAdvance = 1;
@@ -68,33 +70,26 @@ namespace FlippingIsHardTAS
                 return;
             }
 
-            // Auto-repeat after hold delay
-            float heldFor = now - _lastAdvanceTime;
-            if (heldFor >= AdvanceHoldDelay)
+            if (now - _lastAdvanceTime >= HoldDelay)
             {
-                _lastAdvanceTime += AdvanceHoldInterval;
+                _lastAdvanceTime += HoldInterval;
                 _framesToAdvance  = 1;
                 ApplyTimeScale();
             }
         }
 
-        // ── Slow Motion ───────────────────────────────────────────────────
         public void ToggleSlowMo()
         {
             IsSlowMo = !IsSlowMo;
             if (!IsSlowMo) IsSlowMoBoost = false;
+            if (IsSlowMo) IsFastForward = false;
             ApplyTimeScale();
-            TASPlugin.Logger.LogInfo($"SlowMo: {IsSlowMo}");
         }
 
-        /// <summary>
-        /// Called every Update() frame to keep boost state in sync with the key.
-        /// Only has effect while IsSlowMo is true.
-        /// </summary>
+        /// <summary>Keeps the boost state in sync with its key; only meaningful in slow-mo.</summary>
         public void SetSlowMoBoost(bool active)
         {
-            if (!IsSlowMo) return;
-            if (IsSlowMoBoost == active) return; // no change, avoid redundant timeScale writes
+            if (!IsSlowMo || IsSlowMoBoost == active) return;
             IsSlowMoBoost = active;
             ApplyTimeScale();
         }
@@ -102,6 +97,7 @@ namespace FlippingIsHardTAS
         public void ToggleFastForward()
         {
             IsFastForward = !IsFastForward;
+            if (IsFastForward) { IsSlowMo = false; IsSlowMoBoost = false; }
             ApplyTimeScale();
         }
 
@@ -111,18 +107,13 @@ namespace FlippingIsHardTAS
                 Time.timeScale = 1f;
             else if (IsPaused)
                 Time.timeScale = 0f;
-            else if (IsSlowMo)
-                Time.timeScale = IsSlowMoBoost ? SlowMoFast : SlowMoNormal;
-            else if (IsFastForward)
-                Time.timeScale = FastForwardScale;
             else
-                Time.timeScale = 1f;
+                Time.timeScale = SpeedFactor;
         }
 
         /// <summary>
         /// Re-asserts the pause if something external reset Time.timeScale. The game does
-        /// this while it finishes loading after a quick restart — our IsPaused flag stayed
-        /// true but the game ran anyway (and the tick counter kept counting).
+        /// this while it finishes loading after a quick restart.
         /// </summary>
         public void EnforcePause()
         {
@@ -130,8 +121,7 @@ namespace FlippingIsHardTAS
                 ApplyTimeScale();
         }
 
-        // ── FixedUpdate ───────────────────────────────────────────────────
-        // Called from TASController.FixedUpdate (runs every physics step).
+        /// <summary>Called from TASController.FixedUpdate (every physics step).</summary>
         public void FixedUpdate()
         {
             if (Time.timeScale > 0f)
@@ -141,7 +131,7 @@ namespace FlippingIsHardTAS
             {
                 _framesToAdvance--;
                 if (_framesToAdvance <= 0)
-                    ApplyTimeScale(); // re-pause since IsPaused is still true
+                    ApplyTimeScale();   // back to paused
             }
         }
     }

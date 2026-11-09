@@ -1,839 +1,953 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using UnityEngine;
 
 namespace FlippingIsHardTAS
 {
     /// <summary>
-    /// Frame-by-frame macro editor ("piano roll"), in the spirit of TAS Studio / libTAS.
-    /// Works on the bit-perfect replay (state injection — no resimulation): Play/scrub/step
-    /// reproduce the recorded states exactly. Timeline surgery (insert/delete/paste/trim)
-    /// changes what plays back; per-cell input edits are data-only — to change a run's
-    /// physics, re-record live from a chosen tick.
+    /// Frame-by-frame macro editor ("piano roll"). Works on the bit-perfect replay (state
+    /// injection — no resimulation): Play / seek / step reproduce the recorded states
+    /// exactly, and timeline surgery (insert / delete / paste / trim) changes what plays
+    /// back. To change the INPUTS of a stretch you fork it: go to a frame, pin the inputs
+    /// you want and frame-advance — the run is re-recorded live from there.
     /// </summary>
     public class TASEditorRenderer
     {
-        public static bool IsVisibleGlobally = false;
-        public static bool IsTextFieldFocused = false;
-
         private readonly TASController _controller;
-        private bool _isVisible = false;
-        private Rect _windowRect = new Rect(60, 40, 680, 740);
-        private GUI.WindowFunction _windowDelegate;
+        private readonly GuiWindow _win = new GuiWindow("TAS EDITOR", new Rect(60, 40, 724, 760));
+        private bool _visible;
+        private bool _placed;
 
-        // Virtual scrolling
-        private const int VISIBLE_ROWS = 16;
-        private const float ROW_H = 26f;
-        private long _topTick = 0;
-        private bool _followPlayback = true;
+        // ── Table / selection ────────────────────────────────────────────
+        private const float ROW_H = 22f;
+        private int _visibleRows = 18;
+        private long _topTick;
+        private bool _follow = true;
+        private long _anchor = -1, _cursor = -1;   // selection = [min, max] of the two
+        private bool _draggingThumb;
+        private float _thumbGrabOffset;
 
-        // Selection / inline editing
-        private long _selectedTick = -1;
-        private string _editMoveX = "0", _editMoveY = "0", _editPan = "0", _editTilt = "0";
-        // IMGUI interactive controls (GUI.Button/Toggle/TextField) don't work in this
-        // game's IL2CPP build — visuals render but events never fire. Like the bind menu,
-        // everything is drawn with GUI.Box and hit-tested manually against legacy Input.
-        private string _activeField = null;
-        private bool _clickHandledThisFrame = false;
+        private long SelFrom => Math.Min(_anchor, _cursor);
+        private long SelTo => Math.Max(_anchor, _cursor);
+        private bool HasSelection => _cursor >= 0 && _anchor >= 0;
 
-        // Manual window dragging — GUI.DragWindow relies on the broken IMGUI event pipeline
-        private bool _dragging = false;
-        private Vector2 _dragOffset;
+        // Column layout
+        private static readonly float[] ColW = { 70f, 74f, 52f, 52f, 46f, 46f, 74f, 74f, 80f, 80f };
+        private static readonly string[] ColName = { "TICK", "KEYS", "X", "Y", "JUMP", "INT", "PAN", "TILT", "SPEED", "HEIGHT" };
+        private const float TABLE_X = 12f, SCROLL_W = 12f;
 
-        // Range tool
-        private string _rangeFrom = "0", _rangeTo = "0";
-
-        private string _statusMsg = "";
-        private float _statusTimer = 0f;
-
-        // One-time safety net per editor session: resim overwrites recorded physics
-        // state, so a broken resim would silently destroy the macro without this.
-        private bool _backupDone = false;
-
-        // ===== Undo/redo (full-macro snapshots; TASInputState is a struct so a
-        // dictionary copy is a deep copy) =====
-        private class MacroSnapshot
-        {
-            public System.Collections.Generic.Dictionary<ulong, TASInputState> Rows;
-            public ulong MaxTick;
-            public ulong GreenzoneEnd;
-        }
-        private readonly System.Collections.Generic.List<MacroSnapshot> _undoStack
-            = new System.Collections.Generic.List<MacroSnapshot>();
-        private readonly System.Collections.Generic.List<MacroSnapshot> _redoStack
-            = new System.Collections.Generic.List<MacroSnapshot>();
-        private const int UNDO_CAP = 20;
-
-        // Range clipboard: (offset from range start, state)
-        private readonly System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<ulong, TASInputState>> _clipboard
-            = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<ulong, TASInputState>>();
-
-        // Macro file name for the Save/Load section
+        // ── Panels ───────────────────────────────────────────────────────
+        private string _pinX = "0", _pinY = "0";
+        private string _aimPan = "0", _aimTilt = "0";
         private string _fileName = "macro1";
+        private string _currentFile;   // file the macro was last loaded from / saved to
+        private string[] _files = Array.Empty<string>();
+        private int _fileScroll;
+        private string _lastClickedFile;
+        private float _lastFileClickTime;
 
-        private MacroSnapshot TakeSnapshot(InputMacroSystem macro) => new MacroSnapshot
-        {
-            Rows = new System.Collections.Generic.Dictionary<ulong, TASInputState>(macro.RecordedInputs),
-            MaxTick = macro.MaxTick,
-            GreenzoneEnd = macro.GreenzoneEnd,
-        };
+        private string _status = "";
+        private Color _statusColor = TASGui.TextDim;
+        private float _statusTime;
 
-        private void ApplySnapshot(InputMacroSystem macro, MacroSnapshot snap)
+        // Two-click confirmation for destructive actions
+        private string _confirmKey;
+        private float _confirmUntil;
+
+        // ── Undo / redo (full-run snapshots; TASInputState is a struct → deep copy) ──
+        private sealed class Snapshot
         {
-            macro.RecordedInputs = new System.Collections.Generic.Dictionary<ulong, TASInputState>(snap.Rows);
-            macro.MaxTick = snap.MaxTick;
-            macro.GreenzoneEnd = snap.GreenzoneEnd;
+            public Dictionary<ulong, TASInputState> Rows;
+            public ulong MaxTick;
+            public int Seed;
         }
+        private readonly List<Snapshot> _undo = new List<Snapshot>();
+        private readonly List<Snapshot> _redo = new List<Snapshot>();
+        private const int UNDO_CAP = 30;
 
-        /// <summary>Call BEFORE any mutation of the macro (edits, insert/delete, paste, resim).</summary>
-        private void PushUndo(InputMacroSystem macro)
-        {
-            _undoStack.Add(TakeSnapshot(macro));
-            if (_undoStack.Count > UNDO_CAP) _undoStack.RemoveAt(0);
-            _redoStack.Clear();
-        }
+        private readonly List<TASInputState> _clipboard = new List<TASInputState>();
 
-        private void PopUndoDiscard()
-        {
-            if (_undoStack.Count > 0) _undoStack.RemoveAt(_undoStack.Count - 1);
-        }
+        // Dirty tracking against the last save/load
+        private int _savedVersion = -1;
+        private bool _backupDone;
 
-        private void DoUndo(InputMacroSystem macro)
-        {
-            if (_undoStack.Count == 0) { SetStatus("Nothing to undo."); return; }
-            _redoStack.Add(TakeSnapshot(macro));
-            var snap = _undoStack[_undoStack.Count - 1];
-            _undoStack.RemoveAt(_undoStack.Count - 1);
-            ApplySnapshot(macro, snap);
-            SetStatus($"Undo — greenzone at {macro.GreenzoneEnd}, {macro.RecordedInputs.Count} ticks.");
-        }
-
-        private void DoRedo(InputMacroSystem macro)
-        {
-            if (_redoStack.Count == 0) { SetStatus("Nothing to redo."); return; }
-            _undoStack.Add(TakeSnapshot(macro));
-            var snap = _redoStack[_redoStack.Count - 1];
-            _redoStack.RemoveAt(_redoStack.Count - 1);
-            ApplySnapshot(macro, snap);
-            SetStatus($"Redo — greenzone at {macro.GreenzoneEnd}, {macro.RecordedInputs.Count} ticks.");
-        }
-
-        // Styles
-        private GUIStyle _styleCell, _styleCellOn, _styleHeader;
-        private bool _stylesReady = false;
+        private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
         public TASEditorRenderer(TASController controller)
         {
             _controller = controller;
-            _windowDelegate = new Action<int>(WindowFunction);
         }
 
-        public bool IsVisible => _isVisible;
+        private InputMacroSystem Macro => _controller.MacroSystem;
+        public bool IsVisible => _visible;
 
-        public void ForceClose()
-        {
-            if (_isVisible) Close();
-        }
+        private static string MacroDir => Path.Combine(BepInEx.Paths.PluginPath, "FlippingIsHardTAS", "Macros");
+
+        private bool IsDirty => Macro.HasRecordedData && Macro.Version != _savedVersion;
+
+        // ═════════════════════════════════════════════════════════════════
+        //  Open / close
+        // ═════════════════════════════════════════════════════════════════
 
         public void ToggleVisibility()
         {
-            if (_isVisible) Close();
+            if (_visible) Close();
             else Open();
+        }
+
+        public void ForceClose()
+        {
+            if (_visible) Close();
         }
 
         private void Open()
         {
-            _isVisible = true;
-            IsVisibleGlobally = true;
-            _controller.EditorPauseGame();
-
-            var macro = _controller.MacroSystem;
-            if (macro != null && macro.HasRecordedData)
-            {
-                _selectedTick = (long)_controller.EditorCurrentTick;
-                CenterOn(_controller.EditorCurrentTick);
-                LoadSelectionIntoFields();
-            }
+            _visible = true;
             _backupDone = false;
-        }
+            _controller.PauseGame();
+            RefreshFiles();
 
-        // No resim anymore — timeline editing is always allowed. Kept as a single
-        // gate point in case we want to block edits during live recording later.
-        private bool EditingLocked() => false;
-
-        private void BackupMacroOnce(InputMacroSystem macro)
-        {
-            if (_backupDone || macro == null || !macro.HasRecordedData) return;
-            try
+            if (!_placed)
             {
-                string path = System.IO.Path.Combine(BepInEx.Paths.PluginPath,
-                    "FlippingIsHardTAS", "Macros", "editor_backup.tas");
-                macro.ExportMacro(path);
-                _backupDone = true;
-                TASPlugin.Logger.LogInfo("TAS: Macro backed up to Macros/editor_backup.tas");
+                _placed = true;
+                _win.Rect.x = Mathf.Max(20f, Screen.width - _win.Rect.width - 260f);
+                _win.Rect.y = 60f;
             }
-            catch (Exception ex)
+            _win.ClampToScreen();
+
+            if (Macro.HasRecordedData)
             {
-                TASPlugin.Logger.LogError($"Macro backup failed: {ex}");
+                ulong cur = Clamp(_controller.CurrentTick);
+                _anchor = _cursor = (long)cur;
+                CenterOn(cur);
+                LoadAimFields();
             }
         }
 
         private void Close()
         {
-            _isVisible = false;
-            IsVisibleGlobally = false;
-            IsTextFieldFocused = false;
-            _activeField = null;
-            // Hand the cursor back FREE. In gameplay the game re-locks it every frame (for
-            // mouse-look); at the main menu it must stay free so you can click. Restoring the
-            // state captured at Open time re-locked it at the menu after a scene change —
-            // that was the "lost cursor in the menu" bug.
+            _visible = false;
+            TASGui.ActiveField = null;
+            _draggingThumb = false;
+            // Hand the cursor back FREE: in gameplay the game re-locks it every frame for
+            // mouse-look; at the main menu it must stay free so you can click.
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
         }
 
-        private void CenterOn(ulong tick)
-        {
-            _topTick = (long)tick - VISIBLE_ROWS / 2;
-            ClampScroll();
-        }
-
-        private void ClampScroll()
-        {
-            var macro = _controller.MacroSystem;
-            long max = macro != null ? (long)macro.MaxTick : 0;
-            if (_topTick > max - 1) _topTick = max - 1;
-            if (_topTick < 0) _topTick = 0;
-        }
+        // ═════════════════════════════════════════════════════════════════
+        //  Draw
+        // ═════════════════════════════════════════════════════════════════
 
         public void Draw()
         {
-            if (!_isVisible) return;
+            if (!_visible) return;
 
-            // Keep the cursor free (to use the editor) — the game re-locks it every frame.
-            // EXCEPT during live recording/Edit Mode (unpaused): then the cursor must stay
-            // locked so the mouse drives the camera. During replay the cursor stays free
-            // (the camera is replayed, not mouse-driven), so you can keep editing.
-            var macroSys = _controller.MacroSystem;
-            bool liveDriving = macroSys != null
-                               && (macroSys.IsRecording || macroSys.IsEditMode)
-                               && !_controller.EditorIsPaused;
-            if (!liveDriving)
+            // Keep the cursor free to use the editor — except while recording live
+            // (unpaused), where the mouse must keep driving the camera.
+            if (!(Macro.IsRecording && !_controller.IsPaused))
             {
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
             }
 
-            InitStyles();
+            // Fit the table to the screen height.
+            _visibleRows = Mathf.Clamp(Mathf.FloorToInt((Screen.height - 440f) / ROW_H), 6, 24);
+            _win.Rect.height = 380f + _visibleRows * ROW_H;
 
-            if (_followPlayback && macroSys != null
-                && (macroSys.IsPlaying || macroSys.IsRecording || macroSys.IsEditMode))
-                CenterOn(_controller.EditorCurrentTick);
+            if (_follow && (Macro.IsPlaying || Macro.IsRecording) && !_draggingThumb)
+                CenterOn(_controller.CurrentTick);
 
-            if (Event.current.type == EventType.Repaint)
-                _clickHandledThisFrame = false;
-
-            HandleWindowDrag();
-
-            _windowRect = GUI.Window(51237, _windowRect, _windowDelegate, "TAS EDITOR");
-
-            IsTextFieldFocused = _activeField != null;
-        }
-
-        /// <summary>
-        /// While the bind menu is open on top of the editor, both windows hit-test the
-        /// mouse manually with no z-order — a click on the menu would ALSO trigger any
-        /// editor button underneath (seek, toggle jump, delete...). Block all editor
-        /// input while the menu is visible.
-        /// </summary>
-        private static bool InputBlocked => TASBindMenuRenderer.IsVisibleGlobally;
-
-        private void HandleWindowDrag()
-        {
-            if (InputBlocked) { _dragging = false; return; }
-            if (Event.current.type != EventType.Repaint) return;
-
-            Vector2 m = Input.mousePosition;
-            m.y = Screen.height - m.y;
-
-            if (Input.GetMouseButtonDown(0) && !_dragging)
+            if (_win.DrawChrome(Subtitle()))
             {
-                // Title bar = top strip of the window, minus the X button corner
-                var titleRect = new Rect(_windowRect.x, _windowRect.y, _windowRect.width - 44, 24);
-                if (titleRect.Contains(m))
-                {
-                    _dragging = true;
-                    _dragOffset = m - new Vector2(_windowRect.x, _windowRect.y);
-                }
+                Close();
+                return;
             }
 
-            if (_dragging)
-            {
-                if (!Input.GetMouseButton(0))
-                    _dragging = false;
-                else
-                {
-                    _windowRect.x = Mathf.Clamp(m.x - _dragOffset.x, -_windowRect.width + 60, Screen.width - 60);
-                    _windowRect.y = Mathf.Clamp(m.y - _dragOffset.y, 0, Screen.height - 40);
-                }
-            }
+            float y = GuiWindow.TitleH + 10f;
+            DrawTransport(ref y);
+            DrawEditBar(ref y);
+            DrawTable(ref y);
+            DrawPinsAndAim(ref y);
+            DrawFiles(ref y);
+            DrawStatusBar();
+
+            _win.End();
         }
 
-        /// <summary>
-        /// Button that works under IL2CPP: GUI.Box visual + manual hit-test against
-        /// legacy Input (same approach as TASBindMenuRenderer.CustomButton).
-        /// Rect is in window-local coordinates.
-        /// </summary>
-        private bool CustomButton(Rect rect, string text)
+        private string Subtitle()
         {
-            GUI.Box(rect, text);
-            if (InputBlocked || _clickHandledThisFrame) return false;
+            string mode = Macro.IsEditMode ? "EDIT MODE" : Macro.IsRecording ? "RECORDING" : Macro.IsPlaying ? "REPLAY" : "IDLE";
+            if (!Macro.HasRecordedData) return mode;
+            string file = _currentFile != null ? _currentFile + ".tas" : "unsaved";
+            return $"{file}{(IsDirty ? " •" : "")}   ·   {mode}";
+        }
 
-            if (Input.GetMouseButtonDown(0))
+        private Rect R(float x, float y, float w, float h) => _win.R(x, y, w, h);
+
+        // ── Transport ────────────────────────────────────────────────────
+        private void DrawTransport(ref float y)
+        {
+            bool has = Macro.HasRecordedData;
+            float x = 12f;
+
+            if (TASGui.Button(R(x, y, 76, 26), Macro.IsPlaying ? "■ Stop" : "▶ Play", has, Macro.IsPlaying, TASGui.Play))
             {
-                Vector2 rawMouse = Input.mousePosition;
-                rawMouse.y = Screen.height - rawMouse.y;
+                if (Macro.IsPlaying) _controller.StopPlaybackFromEditor();
+                else if (_controller.PlayFromStart(unpause: true)) SetStatus("Replaying from the start.", TASGui.Play);
+            }
+            x += 82;
+            if (TASGui.Button(R(x, y, 84, 26), _controller.IsPaused ? "Resume" : "Pause", true, _controller.IsPaused, TASGui.Pause))
+                _controller.TogglePause();
+            x += 90;
+            if (TASGui.Button(R(x, y, 36, 26), "<", has)) _controller.EditorStepBack();
+            x += 40;
+            if (TASGui.Button(R(x, y, 36, 26), ">", has || Macro.IsRecording)) _controller.EditorStepForward();
+            x += 48;
 
-                Rect absRect = new Rect(_windowRect.x + rect.x, _windowRect.y + rect.y, rect.width, rect.height);
+            string tick = has ? $"Tick  {_controller.CurrentTick}  /  {Macro.MaxTick}" : $"Tick  {_controller.CurrentTick}";
+            TASGui.Label(R(x, y, 260, 26), tick, TASGui.Text, 14, true);
 
-                if (absRect.Contains(rawMouse))
+            _follow = TASGui.Toggle(R(_win.Rect.width - 104, y, 92, 26), "Follow", _follow, TASGui.Ok);
+            y += 34;
+        }
+
+        // ── Edit bar ─────────────────────────────────────────────────────
+        private void DrawEditBar(ref float y)
+        {
+            bool has = Macro.HasRecordedData;
+            bool sel = has && HasSelection;
+            float x = 12f;
+
+            if (TASGui.Button(R(x, y, 56, 24), "Undo", _undo.Count > 0)) DoUndo();
+            x += 60;
+            if (TASGui.Button(R(x, y, 56, 24), "Redo", _redo.Count > 0)) DoRedo();
+            x += 68;
+            if (TASGui.Button(R(x, y, 60, 24), "Insert", sel)) InsertFrames();
+            x += 64;
+            if (TASGui.Button(R(x, y, 60, 24), "Delete", sel)) DeleteFrames();
+            x += 72;
+            if (TASGui.Button(R(x, y, 52, 24), "Copy", sel)) CopyFrames();
+            x += 56;
+            if (TASGui.Button(R(x, y, 52, 24), "Paste", sel && _clipboard.Count > 0)) PasteFrames();
+            x += 64;
+            if (TASGui.Button(R(x, y, 82, 24), "Edit here", sel, accent: TASGui.Edit)) EditHere();
+            x += 86;
+            if (TASGui.Button(R(x, y, 82, 24), "Trim after", sel)) TrimAfter();
+            x += 94;
+            if (TASGui.Button(R(x, y, 50, 24), "New", has, accent: TASGui.Danger)) NewMacro();
+            y += 32;
+        }
+
+        // ── Table ────────────────────────────────────────────────────────
+        private float TableWidth()
+        {
+            float w = 0f;
+            foreach (var c in ColW) w += c;
+            return w;
+        }
+
+        private void DrawTable(ref float y)
+        {
+            float tw = TableWidth();
+            float cx = TABLE_X;
+            TASGui.Fill(R(TABLE_X, y, tw + SCROLL_W + 2, 20), TASGui.BgRaised);
+            for (int c = 0; c < ColName.Length; c++)
+            {
+                TASGui.Label(R(cx, y, ColW[c], 20), ColName[c], TASGui.TextMuted, 11, true, TextAnchor.MiddleCenter);
+                cx += ColW[c];
+            }
+            y += 22;
+
+            float top = y;
+            float bodyH = _visibleRows * ROW_H;
+            var body = R(TABLE_X, top, tw, bodyH);
+            TASGui.Fill(body, TASGui.BgInset);
+
+            if (!Macro.HasRecordedData)
+            {
+                TASGui.Label(body, $"No macro. Record one ({TASConfig.Settings.RecordMacro}) or load a file below.",
+                             TASGui.TextMuted, 13, false, TextAnchor.MiddleCenter);
+            }
+            else
+            {
+                HandleWheel(body);
+                ClampScroll();
+                ulong cur = _controller.CurrentTick;
+                for (int i = 0; i < _visibleRows; i++)
                 {
-                    if (Event.current.type == EventType.Repaint)
+                    long tick = _topTick + i;
+                    if (tick > (long)Macro.MaxTick) break;
+                    DrawRow((ulong)tick, cur, top + i * ROW_H, i);
+                }
+                DrawScrollbar(R(TABLE_X + tw + 2, top, SCROLL_W, bodyH));
+            }
+            y = top + bodyH + 10;
+        }
+
+        private void DrawRow(ulong tick, ulong curTick, float y, int index)
+        {
+            float tw = TableWidth();
+            var rowRect = R(TABLE_X, y, tw, ROW_H);
+
+            bool selected = HasSelection && (long)tick >= SelFrom && (long)tick <= SelTo;
+            bool current = tick == curTick;
+            // Quiet rows: zebra striping, a soft tint for the selection, and the playhead
+            // marked by a tint plus a thin bar instead of a solid block.
+            if (index % 2 == 0) TASGui.Fill(rowRect, new Color(1f, 1f, 1f, 0.018f));
+            if (selected) TASGui.Fill(rowRect, TASGui.Tint(TASGui.Accent, 0.09f));
+            if (current) TASGui.Fill(rowRect, TASGui.Tint(TASGui.Accent, 0.16f));
+            if (current || (long)tick == _cursor)
+                TASGui.Fill(new Rect(rowRect.x, rowRect.y, 2, rowRect.height), TASGui.Tint(TASGui.Accent, current ? 0.9f : 0.4f));
+            if (TASGui.Hover(rowRect)) TASGui.Fill(rowRect, new Color(1f, 1f, 1f, 0.03f));
+
+            float cx = TABLE_X;
+
+            // Tick: click = select + go there; Shift+click = extend the selection.
+            var tickRect = R(cx + 3, y + 2, ColW[0] - 6, ROW_H - 4);
+            bool tickHover = TASGui.Hover(tickRect);
+            TASGui.Label(tickRect, tick.ToString(), tickHover ? TASGui.Accent : current ? TASGui.Text : TASGui.TextDim,
+                         12, current, TextAnchor.MiddleCenter);
+            if (TASGui.Clicked(tickRect)) OnTickClicked(tick);
+            cx += ColW[0];
+
+            var st = Macro.GetStateAtTick(tick);
+            if (st == null)
+            {
+                TASGui.Label(R(cx, y, 200, ROW_H), "— no data —", TASGui.TextMuted, 12, false, TextAnchor.MiddleCenter);
+                return;
+            }
+            var s = st.Value;
+
+            Color zero = TASGui.TextMuted;
+            string keys = KeysGlyph(s.MoveXRaw, s.MoveYRaw);
+            TASGui.Label(R(cx, y, ColW[1], ROW_H), keys, keys == "·" ? zero : TASGui.Text, 12, false, TextAnchor.MiddleCenter);
+            cx += ColW[1];
+            TASGui.Label(R(cx, y, ColW[2], ROW_H), s.MoveXRaw.ToString(), s.MoveXRaw != 0 ? TASGui.TextDim : zero, 12, false, TextAnchor.MiddleCenter);
+            cx += ColW[2];
+            TASGui.Label(R(cx, y, ColW[3], ROW_H), s.MoveYRaw.ToString(), s.MoveYRaw != 0 ? TASGui.TextDim : zero, 12, false, TextAnchor.MiddleCenter);
+            cx += ColW[3];
+
+            // Jump / Interact cells: click = fork here with that button toggled.
+            if (ButtonCell(R(cx + 6, y + 2, ColW[4] - 12, ROW_H - 4), "J", s.Jump)) ForkToggling(tick, toggleJump: true);
+            cx += ColW[4];
+            if (ButtonCell(R(cx + 6, y + 2, ColW[5] - 12, ROW_H - 4), "I", s.Interact)) ForkToggling(tick, toggleJump: false);
+            cx += ColW[5];
+
+            TASGui.Label(R(cx, y, ColW[6], ROW_H), s.CameraPan.ToString("F1", Inv), TASGui.TextDim, 12, false, TextAnchor.MiddleCenter);
+            cx += ColW[6];
+            TASGui.Label(R(cx, y, ColW[7], ROW_H), s.CameraTilt.ToString("F2", Inv), TASGui.TextDim, 12, false, TextAnchor.MiddleCenter);
+            cx += ColW[7];
+            TASGui.Label(R(cx, y, ColW[8], ROW_H), s.PlayerVelocity.magnitude.ToString("F2", Inv), TASGui.TextDim, 12, false, TextAnchor.MiddleCenter);
+            cx += ColW[8];
+            TASGui.Label(R(cx, y, ColW[9], ROW_H), s.PlayerPosition.y.ToString("F2", Inv), TASGui.TextDim, 12, false, TextAnchor.MiddleCenter);
+        }
+
+        private static bool ButtonCell(Rect r, string label, bool on)
+        {
+            bool hover = TASGui.Hover(r);
+            // A small tinted pill when pressed, not a solid block: long held-button runs
+            // otherwise turn the table into a wall of colour.
+            var pill = new Rect(r.center.x - 11, r.y + 2, 22, r.height - 4);
+            if (on) TASGui.Fill(pill, TASGui.Tint(TASGui.Ok, hover ? 0.30f : 0.18f));
+            else if (hover) TASGui.Fill(pill, new Color(1f, 1f, 1f, 0.06f));
+            TASGui.Label(pill, on ? label : "·", on ? TASGui.Ok : TASGui.TextMuted,
+                         11, on, TextAnchor.MiddleCenter);
+            return TASGui.Clicked(r);
+        }
+
+        private static string KeysGlyph(sbyte x, sbyte y)
+        {
+            string s = (y > 16 ? "W" : "") + (x < -16 ? "A" : "") + (y < -16 ? "S" : "") + (x > 16 ? "D" : "");
+            return s.Length == 0 ? "·" : s;
+        }
+
+        private void HandleWheel(Rect body)
+        {
+            if (!TASGui.IsRepaint || !TASGui.Interactive) return;
+            float wheel = Input.mouseScrollDelta.y;
+            if (wheel == 0f || !body.Contains(TASGui.Mouse)) return;
+            _topTick += wheel < 0 ? 3 : -3;
+            _follow = false;
+        }
+
+        private void DrawScrollbar(Rect track)
+        {
+            TASGui.Fill(track, TASGui.BgRaised);
+            long first = (long)Macro.FirstTick, total = (long)Macro.MaxTick - first + 1;
+            if (total <= _visibleRows) return;
+
+            float thumbH = Mathf.Max(24f, track.height * _visibleRows / total);
+            long maxTop = MaxTop();
+            float t = maxTop > first ? (float)(_topTick - first) / (maxTop - first) : 0f;
+            var thumb = new Rect(track.x + 2, track.y + t * (track.height - thumbH), track.width - 4, thumbH);
+
+            if (TASGui.IsRepaint && TASGui.Interactive)
+            {
+                Vector2 m = TASGui.Mouse;
+                if (!_draggingThumb && Input.GetMouseButtonDown(0) && track.Contains(m))
+                {
+                    TASGui.Clicked(track);   // consume
+                    _draggingThumb = true;
+                    _thumbGrabOffset = thumb.Contains(m) ? m.y - thumb.y : thumbH / 2f;
+                    _follow = false;
+                }
+                if (_draggingThumb)
+                {
+                    if (!Input.GetMouseButton(0)) _draggingThumb = false;
+                    else
                     {
-                        _clickHandledThisFrame = true;
-                        return true;
+                        float f = Mathf.Clamp01((m.y - _thumbGrabOffset - track.y) / (track.height - thumbH));
+                        _topTick = first + (long)Mathf.Round(f * (maxTop - first));
                     }
                 }
             }
+
+            bool hot = _draggingThumb || TASGui.Hover(thumb);
+            TASGui.Fill(thumb, hot ? TASGui.Tint(TASGui.Accent, 0.6f) : new Color(1f, 1f, 1f, 0.12f));
+        }
+
+        // ── Pins + camera aim ────────────────────────────────────────────
+        private void DrawPinsAndAim(ref float y)
+        {
+            float x = 12f;
+            float leftW = 420f;
+            TASGui.SectionTitle(R(x, y, leftW, 18), "INPUT PINS — recorded on every frame-advance in Edit Mode");
+            float rx = x + leftW + 16f, rightW = _win.Rect.width - rx - 12f;
+            TASGui.SectionTitle(R(rx, y, rightW, 18), "CAMERA AIM");
+            y += 24;
+
+            var pins = _controller.Pins;
+            var p = pins;
+            float bx = x;
+            p.MoveY = PinToggle(R(bx, y, 34, 26), "W", p.MoveY > 0) ? (sbyte)(p.MoveY > 0 ? 0 : 127) : p.MoveY; bx += 38;
+            p.MoveX = PinToggle(R(bx, y, 34, 26), "A", p.MoveX < 0) ? (sbyte)(p.MoveX < 0 ? 0 : -127) : p.MoveX; bx += 38;
+            p.MoveY = PinToggle(R(bx, y, 34, 26), "S", p.MoveY < 0) ? (sbyte)(p.MoveY < 0 ? 0 : -127) : p.MoveY; bx += 38;
+            p.MoveX = PinToggle(R(bx, y, 34, 26), "D", p.MoveX > 0) ? (sbyte)(p.MoveX > 0 ? 0 : 127) : p.MoveX; bx += 46;
+            if (PinToggle(R(bx, y, 62, 26), "JUMP", p.Jump)) p.Jump = !p.Jump; bx += 66;
+            if (PinToggle(R(bx, y, 50, 26), "INT", p.Interact)) p.Interact = !p.Interact; bx += 58;
+            if (TASGui.Button(R(bx, y, 56, 26), "Clear", p.Active)) p = default; bx += 60;
+            if (TASGui.Button(R(bx, y, 60, 26), "From row", HasSelection && Macro.GetStateAtTick((ulong)_cursor) != null))
+                p = InputPins.FromState(Macro.GetStateAtTick((ulong)_cursor).Value);
+
+            // Camera aim fields (same row)
+            TASGui.Label(R(rx, y, 32, 26), "Pan", TASGui.TextDim, 12);
+            _aimPan = TASGui.TextField(R(rx + 32, y + 1, 70, 24), "aim-pan", _aimPan, 12);
+            TASGui.Label(R(rx + 110, y, 32, 26), "Tilt", TASGui.TextDim, 12);
+            _aimTilt = TASGui.TextField(R(rx + 142, y + 1, 70, 24), "aim-tilt", _aimTilt, 12);
+            y += 32;
+
+            // Analog move (-1..1), for gamepad-like partial inputs
+            TASGui.Label(R(x, y, 70, 24), "Analog X", TASGui.TextDim, 12);
+            _pinX = TASGui.TextField(R(x + 66, y, 60, 24), "pin-x", _pinX, 8);
+            TASGui.Label(R(x + 136, y, 20, 24), "Y", TASGui.TextDim, 12);
+            _pinY = TASGui.TextField(R(x + 152, y, 60, 24), "pin-y", _pinY, 8);
+            if (TASGui.Button(R(x + 220, y, 50, 24), "Set"))
+            {
+                if (TryParseFloat(_pinX, out float ax) && TryParseFloat(_pinY, out float ay))
+                {
+                    p.MoveX = TASInputState.QuantizeAxis(ax);
+                    p.MoveY = TASInputState.QuantizeAxis(ay);
+                }
+                else SetStatus("Analog values must be numbers between -1 and 1.", TASGui.Danger);
+            }
+            string pinHint = !Macro.IsRecording ? "Applies once you're in Edit Mode"
+                           : p.Active ? $"Next [{TASConfig.Settings.FrameAdvance}] records this" : "Nothing pinned — live keys";
+            TASGui.Label(R(x + 280, y, leftW - 280, 24), pinHint, p.Active ? TASGui.Edit : TASGui.TextMuted, 12);
+
+            if (TASGui.Button(R(rx, y, 140, 24), "Aim from cursor", HasSelection)) ApplyAim();
+            if (TASGui.Button(R(rx + 146, y, 66, 24), "Reload", HasSelection)) LoadAimFields();
+            y += 34;
+
+            if (!SamePins(p, pins))
+            {
+                _controller.Pins = p;
+                _pinX = (p.MoveX / 127f).ToString("0.##", Inv);
+                _pinY = (p.MoveY / 127f).ToString("0.##", Inv);
+            }
+        }
+
+        private static bool PinToggle(Rect r, string label, bool on)
+            => TASGui.Button(r, label, true, on, TASGui.Edit, 12);
+
+        private static bool SamePins(InputPins a, InputPins b)
+            => a.MoveX == b.MoveX && a.MoveY == b.MoveY && a.Jump == b.Jump && a.Interact == b.Interact;
+
+        // ── Files ────────────────────────────────────────────────────────
+        private void DrawFiles(ref float y)
+        {
+            float x = 12f, w = _win.Rect.width - 24f;
+            TASGui.SectionTitle(R(x, y, w, 18), "FILES  ·  BepInEx/plugins/FlippingIsHardTAS/Macros");
+            y += 24;
+
+            // List (left)
+            const int listRows = 4;
+            float listW = 300f, itemH = 22f;
+            var list = R(x, y, listW, listRows * itemH);
+            TASGui.Fill(list, TASGui.BgInset);
+            if (_files.Length == 0)
+                TASGui.Label(list, "No saved macros yet", TASGui.TextMuted, 12, false, TextAnchor.MiddleCenter);
+
+            if (TASGui.IsRepaint && TASGui.Interactive && list.Contains(TASGui.Mouse))
+            {
+                float wheel = Input.mouseScrollDelta.y;
+                if (wheel != 0f) _fileScroll += wheel < 0 ? 1 : -1;
+            }
+            _fileScroll = Mathf.Clamp(_fileScroll, 0, Mathf.Max(0, _files.Length - listRows));
+
+            for (int i = 0; i < listRows && _fileScroll + i < _files.Length; i++)
+            {
+                string name = _files[_fileScroll + i];
+                var item = new Rect(list.x, list.y + i * itemH, list.width, itemH);
+                bool sel = name == _fileName;
+                if (sel) TASGui.Fill(item, TASGui.Tint(TASGui.Accent, 0.14f));
+                else if (TASGui.Hover(item)) TASGui.Fill(item, new Color(1f, 1f, 1f, 0.05f));
+                TASGui.Label(new Rect(item.x + 8, item.y, item.width - 16, item.height), name + ".tas", sel ? TASGui.Text : TASGui.TextDim, 12);
+                if (TASGui.Clicked(item))
+                {
+                    // Click selects; double-click loads.
+                    bool dbl = _lastClickedFile == name && Time.unscaledTime - _lastFileClickTime < 0.4f;
+                    _fileName = name;
+                    _lastClickedFile = name;
+                    _lastFileClickTime = Time.unscaledTime;
+                    if (dbl) LoadFile();
+                }
+            }
+
+            // Name + actions (right)
+            float rx = x + listW + 12f;
+            TASGui.Label(R(rx, y, 44, 24), "Name", TASGui.TextDim, 12);
+            _fileName = TASGui.TextField(R(rx + 44, y, 200, 24), "fname", _fileName, 40);
+            if (TASGui.Button(R(rx + 252, y, 70, 24), "Save", Macro.HasRecordedData, accent: TASGui.Ok)) SaveFile();
+            y += 30;
+            if (TASGui.Button(R(rx + 44, y, 96, 24), "Load", _fileName.Length > 0)) LoadFile();
+            if (TASGui.Button(R(rx + 146, y, 96, 24), "Refresh")) RefreshFiles();
+            y += 30;
+            TASGui.Label(R(rx, y, w - listW - 12f, 24),
+                         "Ctrl+Z/Y · Ctrl+C/V · Del/Ins · ↑↓ PgUp/PgDn · Ctrl+S",
+                         TASGui.TextMuted, 12);
+            y = list.yMax + 8f;
+        }
+
+        private void DrawStatusBar()
+        {
+            var bar = R(0, _win.Rect.height - 26, _win.Rect.width, 26);
+            TASGui.Fill(bar, TASGui.BgRaised);
+            if (string.IsNullOrEmpty(_status)) return;
+            // Recent messages are bright, older ones fade to dim.
+            Color c = Time.unscaledTime - _statusTime < 6f ? _statusColor : TASGui.TextMuted;
+            TASGui.Label(new Rect(bar.x + 12, bar.y, bar.width - 24, bar.height), _status, c, 12);
+        }
+
+        // ═════════════════════════════════════════════════════════════════
+        //  Keyboard shortcuts (called from the controller's Update)
+        // ═════════════════════════════════════════════════════════════════
+
+        public void HandleShortcuts()
+        {
+            if (!_visible || TASGui.IsTyping || TASBindMenuRenderer.IsVisibleGlobally) return;
+
+            bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+            bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+
+            if (ctrl)
+            {
+                if (Input.GetKeyDown(KeyCode.Z)) { if (shift) DoRedo(); else DoUndo(); }
+                else if (Input.GetKeyDown(KeyCode.Y)) DoRedo();
+                else if (Input.GetKeyDown(KeyCode.C)) CopyFrames();
+                else if (Input.GetKeyDown(KeyCode.V)) PasteFrames();
+                else if (Input.GetKeyDown(KeyCode.S)) SaveFile();
+                return;
+            }
+
+            if (!Macro.HasRecordedData) return;
+            if (Input.GetKeyDown(KeyCode.Delete)) DeleteFrames();
+            else if (Input.GetKeyDown(KeyCode.Insert)) InsertFrames();
+            else if (Input.GetKeyDown(KeyCode.UpArrow)) MoveCursor(-1, shift);
+            else if (Input.GetKeyDown(KeyCode.DownArrow)) MoveCursor(1, shift);
+            else if (Input.GetKeyDown(KeyCode.PageUp)) MoveCursor(-_visibleRows, shift);
+            else if (Input.GetKeyDown(KeyCode.PageDown)) MoveCursor(_visibleRows, shift);
+            else if (Input.GetKeyDown(KeyCode.Home)) MoveCursor(long.MinValue / 2, shift);
+            else if (Input.GetKeyDown(KeyCode.End)) MoveCursor(long.MaxValue / 2, shift);
+        }
+
+        private void MoveCursor(long delta, bool extend)
+        {
+            long first = (long)Macro.FirstTick, last = (long)Macro.MaxTick;
+            long from = _cursor >= 0 ? _cursor : (long)_controller.CurrentTick;
+            long to = Math.Max(first, Math.Min(last, from + delta));
+            _cursor = to;
+            if (!extend || _anchor < 0) _anchor = to;
+            _follow = false;
+            EnsureVisible(to);
+            if (!extend) GoTo((ulong)to);
+        }
+
+        // ═════════════════════════════════════════════════════════════════
+        //  Actions
+        // ═════════════════════════════════════════════════════════════════
+
+        private void OnTickClicked(ulong tick)
+        {
+            bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+            _follow = false;
+            if (shift && _anchor >= 0)
+            {
+                _cursor = (long)tick;
+                SetStatus($"Selected {SelTo - SelFrom + 1} frames ({SelFrom}–{SelTo}).", TASGui.TextDim);
+                return;
+            }
+            _anchor = _cursor = (long)tick;
+            GoTo(tick);
+        }
+
+        private void GoTo(ulong tick)
+        {
+            LoadAimFields();
+            if (!_controller.GoToTick(tick))
+                SetStatus($"Can't go to tick {tick}.", TASGui.Danger);
+        }
+
+        /// <summary>
+        /// J/I cell: changing a button at tick N means re-recording N from N-1's state. Enter
+        /// Edit Mode on N-1 with that frame's inputs pinned (the button toggled); the next
+        /// frame-advance forks the run and records N live.
+        /// </summary>
+        private void ForkToggling(ulong tick, bool toggleJump)
+        {
+            var st = Macro.GetStateAtTick(tick);
+            if (st == null) return;
+            if (tick == 0 || tick <= Macro.FirstTick || Macro.GetStateAtTick(tick - 1) == null)
+            {
+                SetStatus("The first frame has no previous state to fork from.", TASGui.Pause);
+                return;
+            }
+            if (!_controller.BeginEditAt(tick - 1))
+            {
+                SetStatus($"Can't enter Edit Mode at tick {tick - 1}.", TASGui.Danger);
+                return;
+            }
+
+            var pins = InputPins.FromState(st.Value);
+            if (toggleJump) pins.Jump = !pins.Jump;
+            else pins.Interact = !pins.Interact;
+            _controller.Pins = pins;
+            _anchor = _cursor = (long)tick - 1;
+            _follow = true;
+            SetStatus($"Edit Mode at {tick - 1}, inputs of {tick} pinned with {(toggleJump ? "JUMP" : "INT")} {(toggleJump ? (pins.Jump ? "on" : "off") : (pins.Interact ? "on" : "off"))}. " +
+                      $"Press [{TASConfig.Settings.FrameAdvance}] to record it (drops the frames after).", TASGui.Edit);
+        }
+
+        private void EditHere()
+        {
+            if (!HasSelection) return;
+            if (_controller.BeginEditAt((ulong)_cursor))
+                SetStatus($"Edit Mode at {_cursor}. Frame-advance with keys held or inputs pinned to fork from here.", TASGui.Edit);
+            else
+                SetStatus($"Can't enter Edit Mode at {_cursor}.", TASGui.Danger);
+        }
+
+        private void TrimAfter()
+        {
+            if (!HasSelection) return;
+            ulong at = (ulong)_cursor;
+            if (at >= Macro.MaxTick) { SetStatus("Nothing after the cursor.", TASGui.TextDim); return; }
+            BeginMutation();
+            ulong dropped = Macro.MaxTick - at;
+            Macro.TruncateAt(at + 1);
+            AfterMutation();
+            SetStatus($"Trimmed {dropped} frames after {at}.", TASGui.Ok);
+        }
+
+        private void NewMacro()
+        {
+            if (IsDirty && !Confirm("new", "Unsaved changes — click New again to discard the macro (Undo can still bring it back).")) return;
+            BeginMutation();
+            _controller.DiscardMacro();
+            AfterMutation();
+            _anchor = _cursor = -1;
+            _currentFile = null;
+            _savedVersion = Macro.Version;
+            SetStatus("Macro cleared.", TASGui.TextDim);
+        }
+
+        private void InsertFrames()
+        {
+            if (!HasSelection) return;
+            int count = (int)Math.Min(SelTo - SelFrom + 1, 100000);
+            BeginMutation();
+            Macro.InsertTicksAt((ulong)SelFrom, count);
+            AfterMutation();
+            SetStatus($"Inserted {count} frame(s) at {SelFrom} (copies of the frame before) — later frames +{count}.", TASGui.Ok);
+        }
+
+        private void DeleteFrames()
+        {
+            if (!HasSelection) return;
+            long from = SelFrom, to = SelTo;
+            BeginMutation();
+            Macro.DeleteRange((ulong)from, (ulong)to);
+            AfterMutation();
+            long n = to - from + 1;
+            _anchor = _cursor = Math.Min(from, (long)Macro.MaxTick);
+            SetStatus($"Deleted {n} frame(s) {from}–{to} — later frames −{n}.", TASGui.Ok);
+        }
+
+        private void CopyFrames()
+        {
+            if (!HasSelection) return;
+            _clipboard.Clear();
+            for (long t = SelFrom; t <= SelTo; t++)
+            {
+                var st = Macro.GetStateAtTick((ulong)t);
+                if (st != null) _clipboard.Add(st.Value);
+            }
+            SetStatus($"Copied {_clipboard.Count} frame(s) {SelFrom}–{SelTo}.", TASGui.TextDim);
+        }
+
+        /// <summary>Full-state paste: the pasted segment plays back exactly (seam at the edges).</summary>
+        private void PasteFrames()
+        {
+            if (_clipboard.Count == 0) { SetStatus("Clipboard is empty — Copy first.", TASGui.TextDim); return; }
+            if (!HasSelection) return;
+            ulong at = (ulong)_cursor;
+            BeginMutation();
+            Macro.PasteStates(at, _clipboard);
+            AfterMutation();
+            SetStatus($"Pasted {_clipboard.Count} frame(s) over {at}–{at + (ulong)_clipboard.Count - 1}.", TASGui.Ok);
+        }
+
+        private void ApplyAim()
+        {
+            if (!HasSelection) return;
+            if (!TryParseFloat(_aimPan, out float pan) || !TryParseFloat(_aimTilt, out float tilt))
+            {
+                SetStatus("Pan and Tilt must be numbers.", TASGui.Danger);
+                return;
+            }
+            BeginMutation();
+            Macro.SetCameraFrom((ulong)_cursor, pan, tilt);
+            AfterMutation();
+            SetStatus($"Camera aimed at {pan:F1} / {tilt:F2} from tick {_cursor} onward.", TASGui.Ok);
+        }
+
+        private void LoadAimFields()
+        {
+            if (!HasSelection) return;
+            var st = Macro.GetStateAtTick((ulong)_cursor);
+            if (st == null) return;
+            // Invariant culture: Spanish Windows would format "12,34", which reads back wrong.
+            _aimPan = st.Value.CameraPan.ToString("F2", Inv);
+            _aimTilt = st.Value.CameraTilt.ToString("F3", Inv);
+        }
+
+        // ── Files ────────────────────────────────────────────────────────
+        private string PathFor(string name) => Path.Combine(MacroDir, name + ".tas");
+
+        private static bool ValidFileName(string name)
+            => !string.IsNullOrWhiteSpace(name) && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
+
+        private void RefreshFiles()
+        {
+            try
+            {
+                if (!Directory.Exists(MacroDir)) { _files = Array.Empty<string>(); return; }
+                var infos = new DirectoryInfo(MacroDir).GetFiles("*.tas");
+                Array.Sort(infos, (a, b) => b.LastWriteTimeUtc.CompareTo(a.LastWriteTimeUtc));
+                _files = Array.ConvertAll(infos, f => Path.GetFileNameWithoutExtension(f.Name));
+            }
+            catch (Exception ex)
+            {
+                _files = Array.Empty<string>();
+                SetStatus($"Can't list macros: {ex.Message}", TASGui.Danger);
+            }
+        }
+
+        private void SaveFile()
+        {
+            if (!Macro.HasRecordedData) { SetStatus("No macro to save.", TASGui.TextDim); return; }
+            string name = _fileName.Trim();
+            if (!ValidFileName(name)) { SetStatus("Invalid file name.", TASGui.Danger); return; }
+            string path = PathFor(name);
+            // Re-saving the file you're working on is silent; clobbering another one asks first.
+            if (File.Exists(path) && name != _currentFile
+                && !Confirm("save:" + name, $"{name}.tas already exists — click Save again to overwrite it.")) return;
+
+            try
+            {
+                Macro.ExportMacro(path);
+                _fileName = name;
+                _currentFile = name;
+                _savedVersion = Macro.Version;
+                RefreshFiles();
+                SetStatus($"Saved {name}.tas — {Macro.RecordedInputs.Count} ticks.", TASGui.Ok);
+                TASGui.Toast($"Saved {name}.tas", TASGui.Ok);
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"Save failed: {ex.Message}", TASGui.Danger);
+                TASPlugin.Logger.LogError($"TAS: saving {path} failed: {ex}");
+            }
+        }
+
+        private void LoadFile()
+        {
+            string name = _fileName.Trim();
+            if (!ValidFileName(name)) { SetStatus("Invalid file name.", TASGui.Danger); return; }
+            if (IsDirty && !Confirm("load:" + name, "Unsaved changes — click Load again to replace them (Undo can bring them back).")) return;
+
+            _controller.StopPlaybackFromEditor();
+            var before = TakeSnapshot();
+            if (!Macro.ImportMacro(PathFor(name), out string error))
+            {
+                SetStatus($"Can't load {name}.tas: {error}.", TASGui.Danger);
+                return;
+            }
+            PushUndo(before);
+            _controller.OnMacroReplaced();
+            _currentFile = name;
+            _savedVersion = Macro.Version;
+            _anchor = _cursor = (long)Macro.FirstTick;
+            _topTick = (long)Macro.FirstTick;
+            LoadAimFields();
+            SetStatus($"Loaded {name}.tas — {Macro.RecordedInputs.Count} ticks ({Macro.FirstTick}–{Macro.MaxTick}).", TASGui.Ok);
+        }
+
+        // ═════════════════════════════════════════════════════════════════
+        //  Undo / redo
+        // ═════════════════════════════════════════════════════════════════
+
+        private Snapshot TakeSnapshot() => new Snapshot
+        {
+            Rows = new Dictionary<ulong, TASInputState>(Macro.RecordedInputs),
+            MaxTick = Macro.MaxTick,
+            Seed = Macro.RNGSeed,
+        };
+
+        private void Restore(Snapshot s)
+            => Macro.ReplaceAll(new Dictionary<ulong, TASInputState>(s.Rows), s.MaxTick, s.Seed);
+
+        private void PushUndo(Snapshot s)
+        {
+            _undo.Add(s);
+            if (_undo.Count > UNDO_CAP) _undo.RemoveAt(0);
+            _redo.Clear();
+        }
+
+        /// <summary>Call before changing the run: one-time file backup + undo snapshot.</summary>
+        private void BeginMutation()
+        {
+            if (!_backupDone && Macro.HasRecordedData)
+            {
+                try
+                {
+                    Macro.ExportMacro(PathFor("editor_backup"));
+                    _backupDone = true;
+                }
+                catch (Exception ex)
+                {
+                    TASPlugin.Logger.LogError($"TAS: editor backup failed: {ex}");
+                }
+            }
+            PushUndo(TakeSnapshot());
+        }
+
+        private void AfterMutation()
+        {
+            _controller.OnMacroEdited();
+            ClampSelection();
+        }
+
+        private void DoUndo()
+        {
+            if (_undo.Count == 0) { SetStatus("Nothing to undo.", TASGui.TextDim); return; }
+            _redo.Add(TakeSnapshot());
+            var s = _undo[_undo.Count - 1];
+            _undo.RemoveAt(_undo.Count - 1);
+            Restore(s);
+            AfterMutation();
+            SetStatus($"Undo — {Macro.RecordedInputs.Count} ticks.", TASGui.TextDim);
+        }
+
+        private void DoRedo()
+        {
+            if (_redo.Count == 0) { SetStatus("Nothing to redo.", TASGui.TextDim); return; }
+            _undo.Add(TakeSnapshot());
+            var s = _redo[_redo.Count - 1];
+            _redo.RemoveAt(_redo.Count - 1);
+            Restore(s);
+            AfterMutation();
+            SetStatus($"Redo — {Macro.RecordedInputs.Count} ticks.", TASGui.TextDim);
+        }
+
+        // ═════════════════════════════════════════════════════════════════
+        //  Helpers
+        // ═════════════════════════════════════════════════════════════════
+
+        private bool Confirm(string key, string prompt)
+        {
+            if (_confirmKey == key && Time.unscaledTime < _confirmUntil)
+            {
+                _confirmKey = null;
+                return true;
+            }
+            _confirmKey = key;
+            _confirmUntil = Time.unscaledTime + 4f;
+            SetStatus(prompt, TASGui.Pause);
             return false;
         }
 
-        /// <summary>
-        /// Minimal text field that works under IL2CPP (GUI.TextField is stripped here).
-        /// Click to focus, type to edit, Enter/Escape to unfocus.
-        /// </summary>
-        private string SimpleTextField(Rect r, string id, string value)
+        private ulong Clamp(ulong tick)
         {
-            bool active = _activeField == id;
-            GUI.color = active ? new Color(0.8f, 1f, 0.8f) : Color.white;
-            GUI.Box(r, active ? value + "_" : value);
-            GUI.color = Color.white;
-
-            if (InputBlocked) return value;
-
-            var e = Event.current;
-            if (Input.GetMouseButtonDown(0) && e.type == EventType.Repaint)
-            {
-                Rect abs = new Rect(_windowRect.x + r.x, _windowRect.y + r.y, r.width, r.height);
-                Vector2 m = Input.mousePosition;
-                m.y = Screen.height - m.y;
-                if (abs.Contains(m) && !_clickHandledThisFrame)
-                {
-                    _activeField = id;
-                    _clickHandledThisFrame = true;
-                }
-                else if (active && !abs.Contains(m))
-                    _activeField = null;
-            }
-
-            if (active && e.type == EventType.KeyDown)
-            {
-                if (e.keyCode == KeyCode.Backspace)
-                {
-                    if (value.Length > 0) value = value.Substring(0, value.Length - 1);
-                    e.Use();
-                }
-                else if (e.keyCode == KeyCode.Return || e.keyCode == KeyCode.Escape)
-                {
-                    _activeField = null;
-                    e.Use();
-                }
-                else if (e.character != 0 && e.character >= 32)
-                {
-                    value += e.character;
-                    e.Use();
-                }
-            }
-            return value;
+            if (!Macro.HasRecordedData) return 0;
+            if (tick < Macro.FirstTick) return Macro.FirstTick;
+            return tick > Macro.MaxTick ? Macro.MaxTick : tick;
         }
 
-        private void InitStyles()
+        private void ClampSelection()
         {
-            if (_stylesReady) return;
-            _styleCell = new GUIStyle { fontSize = 12, alignment = TextAnchor.MiddleCenter };
-            _styleCell.normal.textColor = Color.white;
-            _styleCellOn = new GUIStyle { fontSize = 12, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
-            _styleCellOn.normal.textColor = new Color(0.3f, 1f, 0.5f);
-            _styleHeader = new GUIStyle { fontSize = 12, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
-            _styleHeader.normal.textColor = new Color(0.5f, 0.75f, 1f);
-            _stylesReady = true;
+            if (!Macro.HasRecordedData) { _anchor = _cursor = -1; return; }
+            long first = (long)Macro.FirstTick, last = (long)Macro.MaxTick;
+            if (_anchor >= 0) _anchor = Math.Max(first, Math.Min(last, _anchor));
+            if (_cursor >= 0) _cursor = Math.Max(first, Math.Min(last, _cursor));
         }
 
-        // Column layout: Tick | MoveX | MoveY | Jump | Int | Pan | Tilt
-        private static readonly float[] ColW = { 80f, 80f, 80f, 60f, 60f, 90f, 90f };
-        private static readonly string[] ColName = { "TICK", "MOVE X", "MOVE Y", "JUMP", "INT", "PAN", "TILT" };
+        private long MaxTop() => Math.Max((long)Macro.FirstTick, (long)Macro.MaxTick - _visibleRows + 1);
 
-        private void WindowFunction(int id)
+        private void ClampScroll()
         {
-            var macro = _controller.MacroSystem;
-
-            GUI.backgroundColor = new Color(0.7f, 0.2f, 0.2f, 1f);
-            if (CustomButton(new Rect(_windowRect.width - 36, 4, 28, 20), "X"))
-            {
-                Close();
-                GUI.DragWindow();
-                return;
-            }
-            GUI.backgroundColor = Color.white;
-
-            float x = 12, y = 28;
-
-            if (macro == null || !macro.HasRecordedData)
-            {
-                GUI.Label(new Rect(x, y, 600, 22), "No macro loaded. Record one (F9) or load it from the FILE section below.");
-                GUI.DragWindow();
-                return;
-            }
-
-            // ── Toolbar ──
-            ulong curTick = _controller.EditorCurrentTick;
-            GUI.Label(new Rect(x, y, 420, 20),
-                $"Ticks: {macro.MaxTick}   Current: {curTick}" +
-                (macro.IsPlaying ? "   [PLAYING]" : ""));
-
-            GUI.backgroundColor = _followPlayback ? new Color(0.2f, 0.9f, 0.4f) : Color.white;
-            if (CustomButton(new Rect(x + 430, y, 110, 20), _followPlayback ? "Follow: ON" : "Follow: OFF"))
-                _followPlayback = !_followPlayback;
-            GUI.backgroundColor = Color.white;
-            y += 24;
-
-            // ── Toolbar row 1: playback (bit-perfect replay) ──
-            if (CustomButton(new Rect(x, y, 60, 22), macro.IsPlaying ? "Stop" : "Play"))
-            {
-                if (macro.IsPlaying) _controller.EditorStopPlayback();
-                else
-                {
-                    BackupMacroOnce(macro);
-                    if (!_controller.EditorPlayFromStart()) SetStatus("Could not start playback.");
-                }
-            }
-            if (CustomButton(new Rect(x + 66, y, 70, 22), _controller.EditorIsPaused ? "Resume" : "Pause"))
-                _controller.EditorTogglePause();
-            if (CustomButton(new Rect(x + 142, y, 36, 22), "<"))
-                _controller.EditorStepBack();
-            if (CustomButton(new Rect(x + 184, y, 36, 22), ">"))
-                _controller.EditorStepForward();
-            if (CustomButton(new Rect(x + 226, y, 95, 22), "Go to current"))
-                CenterOn(curTick);
-            // Enter live Edit Mode at the selected tick (or current) and close the editor so
-            // the cursor locks and the mouse drives the camera in-game.
-            GUI.backgroundColor = new Color(1f, 0.6f, 0.2f);
-            if (CustomButton(new Rect(x + 331, y, 90, 22), "Edit here"))
-            {
-                ulong at = _selectedTick >= 0 ? (ulong)_selectedTick : curTick;
-                BackupMacroOnce(macro);
-                if (_controller.EditorEnterEditModeAt(at))
-                    ForceClose();
-                else
-                    SetStatus("Can't enter edit mode here (busy or no data at tick).");
-            }
-            GUI.backgroundColor = Color.white;
-            y += 28;
-
-            // ── Toolbar row 2: timeline editing ──
-            if (CustomButton(new Rect(x, y, 60, 22), "Undo"))
-                DoUndo(macro);
-            if (CustomButton(new Rect(x + 66, y, 60, 22), "Redo"))
-                DoRedo(macro);
-            if (CustomButton(new Rect(x + 132, y, 70, 22), "Insert"))
-                InsertAtSelection(macro);
-            if (CustomButton(new Rect(x + 208, y, 70, 22), "Delete"))
-                DeleteAtSelection(macro);
-            if (CustomButton(new Rect(x + 284, y, 60, 22), "Copy"))
-                CopyRange(macro);
-            if (CustomButton(new Rect(x + 350, y, 95, 22), "Paste @ sel"))
-                PasteAtSelection(macro);
-            y += 30;
-
-            // ── Header row ──
-            float cx = x;
-            for (int c = 0; c < ColName.Length; c++)
-            {
-                GUI.Label(new Rect(cx, y, ColW[c], 18), ColName[c], _styleHeader);
-                cx += ColW[c];
-            }
-            y += 20;
-
-            // ── Rows (virtual scroll) ──
-            HandleScroll();
-            float rowsTop = y;
-            for (int i = 0; i < VISIBLE_ROWS; i++)
-            {
-                long tick = _topTick + i;
-                if (tick < 0 || (ulong)tick > macro.MaxTick) break;
-                DrawRow(macro, (ulong)tick, curTick, x, y);
-                y += ROW_H;
-            }
-            y = rowsTop + VISIBLE_ROWS * ROW_H + 6;
-
-            // ── Edit panel for the selected tick ──
-            DrawEditPanel(macro, x, ref y);
-
-            // ── Range tool ──
-            DrawRangeTool(macro, x, ref y);
-
-            // ── Macro file save/load ──
-            DrawFileSection(macro, x, ref y);
-
-            if (_statusTimer > 0f)
-            {
-                _statusTimer -= Time.unscaledDeltaTime;
-                GUI.Label(new Rect(x, _windowRect.height - 24, 620, 20), _statusMsg);
-            }
-
-            GUI.DragWindow();
+            long first = (long)Macro.FirstTick;
+            _topTick = Math.Max(first, Math.Min(MaxTop(), _topTick));
         }
 
-        private void HandleScroll()
+        private void CenterOn(ulong tick)
         {
-            // Legacy Input — IMGUI ScrollWheel events never fire in this game.
-            // Only react once per frame (Repaint) and only with the mouse over the window.
-            if (InputBlocked) return;
-            if (Event.current.type != EventType.Repaint) return;
+            _topTick = (long)tick - _visibleRows / 2;
+            if (Macro.HasRecordedData) ClampScroll();
+        }
 
-            float scroll = Input.mouseScrollDelta.y;
-            if (scroll == 0f) return;
-
-            Vector2 m = Input.mousePosition;
-            m.y = Screen.height - m.y;
-            if (!_windowRect.Contains(m)) return;
-
-            _topTick += scroll < 0 ? 3 : -3;
+        private void EnsureVisible(long tick)
+        {
+            if (tick < _topTick) _topTick = tick;
+            else if (tick >= _topTick + _visibleRows) _topTick = tick - _visibleRows + 1;
             ClampScroll();
-            _followPlayback = false;
-        }
-
-        private void DrawRow(InputMacroSystem macro, ulong tick, ulong curTick, float x, float y)
-        {
-            var stateOpt = macro.GetStateAtTick(tick);
-
-            // Row background: current tick highlighted red; recorded rows tinted green.
-            Color bg;
-            if (tick == curTick)        bg = new Color(0.85f, 0.25f, 0.25f, 0.45f);
-            else if (stateOpt != null)  bg = new Color(0.15f, 0.5f, 0.2f, 0.30f);
-            else                        bg = new Color(0.4f, 0.4f, 0.4f, 0.20f);
-            if ((long)tick == _selectedTick) bg.a += 0.25f;
-
-            float totalW = 0f;
-            foreach (var w in ColW) totalW += w;
-            GUI.color = bg;
-            GUI.DrawTexture(new Rect(x, y, totalW, ROW_H - 2), Texture2D.whiteTexture);
-            GUI.color = Color.white;
-
-            float cx = x;
-
-            // Tick column: click = select + seek (if inside greenzone)
-            if (CustomButton(new Rect(cx + 2, y, ColW[0] - 4, ROW_H - 3), tick.ToString()))
-            {
-                if (EditingLocked()) return;
-                _selectedTick = (long)tick;
-                LoadSelectionIntoFields();
-                _followPlayback = false;
-                // Every recorded tick has a valid state (no resim), so any tick is seekable.
-                if (!_controller.SeekToTick(tick))
-                    SetStatus($"Could not seek to tick {tick}.");
-            }
-            cx += ColW[0];
-
-            if (stateOpt == null)
-            {
-                GUI.Label(new Rect(cx, y, 200, ROW_H), "— no data —", _styleCell);
-                return;
-            }
-            var s = stateOpt.Value;
-
-            GUI.Label(new Rect(cx, y, ColW[1], ROW_H), s.Move.x.ToString("F2"), _styleCell);
-            cx += ColW[1];
-            GUI.Label(new Rect(cx, y, ColW[2], ROW_H), s.Move.y.ToString("F2"), _styleCell);
-            cx += ColW[2];
-
-            // Jump / Interact: one click toggles the button on that frame
-            GUI.backgroundColor = s.Jump ? new Color(0.2f, 0.9f, 0.4f) : Color.white;
-            if (CustomButton(new Rect(cx + 8, y, ColW[3] - 16, ROW_H - 3), s.Jump ? "J" : "·"))
-            {
-                if (!EditingLocked())
-                {
-                    BackupMacroOnce(macro);
-                    PushUndo(macro);
-                    macro.SetInputAt(tick, s.Move, !s.Jump, s.Interact, s.CameraPan, s.CameraTilt);
-                    macro.TruncateAt(tick + 1);   // editing an input forks: drop the stale continuation
-                    if (_selectedTick == (long)tick) LoadSelectionIntoFields();
-                    SetStatus($"Jump edited at {tick} — forward dropped. Re-record from here.");
-                }
-            }
-            cx += ColW[3];
-            GUI.backgroundColor = s.Interact ? new Color(0.2f, 0.9f, 0.4f) : Color.white;
-            if (CustomButton(new Rect(cx + 8, y, ColW[4] - 16, ROW_H - 3), s.Interact ? "I" : "·"))
-            {
-                if (!EditingLocked())
-                {
-                    BackupMacroOnce(macro);
-                    PushUndo(macro);
-                    macro.SetInputAt(tick, s.Move, s.Jump, !s.Interact, s.CameraPan, s.CameraTilt);
-                    macro.TruncateAt(tick + 1);   // editing an input forks: drop the stale continuation
-                    if (_selectedTick == (long)tick) LoadSelectionIntoFields();
-                    SetStatus($"Interact edited at {tick} — forward dropped. Re-record from here.");
-                }
-            }
-            GUI.backgroundColor = Color.white;
-            cx += ColW[4];
-
-            GUI.Label(new Rect(cx, y, ColW[5], ROW_H), s.CameraPan.ToString("F1"), _styleCell);
-            cx += ColW[5];
-            GUI.Label(new Rect(cx, y, ColW[6], ROW_H), s.CameraTilt.ToString("F1"), _styleCell);
-        }
-
-        private void DrawEditPanel(InputMacroSystem macro, float x, ref float y)
-        {
-            GUI.Label(new Rect(x, y, 200, 20), $"EDIT TICK {(_selectedTick >= 0 ? _selectedTick.ToString() : "—")}", _styleHeader);
-            y += 22;
-
-            GUI.Label(new Rect(x, y, 55, 20), "MoveX:");
-            _editMoveX = SimpleTextField(new Rect(x + 55, y, 60, 20), "mx", _editMoveX);
-            GUI.Label(new Rect(x + 125, y, 55, 20), "MoveY:");
-            _editMoveY = SimpleTextField(new Rect(x + 180, y, 60, 20), "my", _editMoveY);
-            GUI.Label(new Rect(x + 250, y, 40, 20), "Pan:");
-            _editPan = SimpleTextField(new Rect(x + 290, y, 60, 20), "pan", _editPan);
-            GUI.Label(new Rect(x + 360, y, 40, 20), "Tilt:");
-            _editTilt = SimpleTextField(new Rect(x + 400, y, 60, 20), "tilt", _editTilt);
-
-            if (CustomButton(new Rect(x + 475, y, 80, 22), "Apply"))
-                ApplyEditFields(macro);
-            y += 28;
-        }
-
-        private void DrawRangeTool(InputMacroSystem macro, float x, ref float y)
-        {
-            GUI.Label(new Rect(x, y, 200, 20), "RANGE", _styleHeader);
-            y += 22;
-
-            GUI.Label(new Rect(x, y, 45, 20), "From:");
-            _rangeFrom = SimpleTextField(new Rect(x + 45, y, 65, 20), "rfrom", _rangeFrom);
-            GUI.Label(new Rect(x + 120, y, 45, 20), "To:");
-            _rangeTo = SimpleTextField(new Rect(x + 165, y, 65, 20), "rto", _rangeTo);
-
-            if (CustomButton(new Rect(x + 245, y, 90, 22), "Jump ON"))
-                ApplyRange(macro, jump: true);
-            if (CustomButton(new Rect(x + 340, y, 90, 22), "Jump OFF"))
-                ApplyRange(macro, jump: false);
-            if (CustomButton(new Rect(x + 435, y, 75, 22), "Int ON"))
-                ApplyRange(macro, interact: true);
-            if (CustomButton(new Rect(x + 515, y, 75, 22), "Int OFF"))
-                ApplyRange(macro, interact: false);
-            y += 28;
-        }
-
-        private void ApplyRange(InputMacroSystem macro, bool? jump = null, bool? interact = null)
-        {
-            if (!ulong.TryParse(_rangeFrom, out ulong from) || !ulong.TryParse(_rangeTo, out ulong to) || to < from)
-            {
-                SetStatus("Invalid range.");
-                return;
-            }
-            if (EditingLocked()) return;
-            BackupMacroOnce(macro);
-            PushUndo(macro);
-            int applied = 0;
-            for (ulong t = from; t <= to && t <= macro.MaxTick; t++)
-            {
-                var st = macro.GetStateAtTick(t);
-                if (st == null) continue;
-                var s = st.Value;
-                macro.SetInputAt(t, s.Move,
-                                 jump ?? s.Jump,
-                                 interact ?? s.Interact,
-                                 s.CameraPan, s.CameraTilt);
-                applied++;
-            }
-            SetStatus($"Applied J/I to {applied} ticks ({from}–{to}). Data only — re-record to change the run.");
-        }
-
-        private void InsertAtSelection(InputMacroSystem macro)
-        {
-            if (EditingLocked()) return;
-            if (_selectedTick < 0) { SetStatus("Select a tick first (click its number)."); return; }
-            BackupMacroOnce(macro);
-            PushUndo(macro);
-            macro.InsertTickAt((ulong)_selectedTick);
-            SetStatus($"Frame inserted at {_selectedTick} — later frames shifted +1 (MaxTick {macro.MaxTick}).");
-        }
-
-        private void DeleteAtSelection(InputMacroSystem macro)
-        {
-            if (EditingLocked()) return;
-            if (_selectedTick < 0) { SetStatus("Select a tick first (click its number)."); return; }
-            BackupMacroOnce(macro);
-            PushUndo(macro);
-            ulong deletedTick = (ulong)_selectedTick;
-            macro.DeleteTickAt(deletedTick);
-            if ((ulong)_selectedTick > macro.MaxTick) _selectedTick = (long)macro.MaxTick;
-            LoadSelectionIntoFields();
-            SetStatus($"Frame {deletedTick} deleted — later frames shifted -1 (MaxTick {macro.MaxTick}).");
-        }
-
-        private void CopyRange(InputMacroSystem macro)
-        {
-            if (!ulong.TryParse(_rangeFrom, out ulong from) || !ulong.TryParse(_rangeTo, out ulong to) || to < from)
-            {
-                SetStatus("Invalid range (set From/To in the RANGE section).");
-                return;
-            }
-            _clipboard.Clear();
-            for (ulong t = from; t <= to && t <= macro.MaxTick; t++)
-            {
-                var st = macro.GetStateAtTick(t);
-                if (st != null)
-                    _clipboard.Add(new System.Collections.Generic.KeyValuePair<ulong, TASInputState>(t - from, st.Value));
-            }
-            SetStatus($"Copied {_clipboard.Count} frames ({from}–{to}).");
-        }
-
-        private void PasteAtSelection(InputMacroSystem macro)
-        {
-            if (EditingLocked()) return;
-            if (_clipboard.Count == 0) { SetStatus("Clipboard empty — use Copy first."); return; }
-            // Fall back to the current tick if nothing is selected (same as "Edit here").
-            ulong at = _selectedTick >= 0 ? (ulong)_selectedTick : _controller.EditorCurrentTick;
-
-            BackupMacroOnce(macro);
-            PushUndo(macro);
-            int pasted = 0;
-            foreach (var kvp in _clipboard)
-            {
-                ulong target = at + kvp.Key;
-                if (target > macro.MaxTick) break;
-                // Paste all input fields (Move X/Y, Jump, Interact, Pan, Tilt) onto the
-                // destination tick, leaving its physics state intact (no teleport).
-                var src = kvp.Value;
-                macro.SetInputAt(target, src.Move, src.Jump, src.Interact, src.CameraPan, src.CameraTilt);
-                pasted++;
-            }
-            SetStatus($"Pasted {pasted} frames at {at} (MoveX/Y, Jump, Int, Pan, Tilt).");
-        }
-
-        private void DrawFileSection(InputMacroSystem macro, float x, ref float y)
-        {
-            GUI.Label(new Rect(x, y, 200, 20), "FILE", _styleHeader);
-            y += 22;
-
-            GUI.Label(new Rect(x, y, 45, 20), "Name:");
-            _fileName = SimpleTextField(new Rect(x + 45, y, 160, 20), "fname", _fileName);
-
-            string path = System.IO.Path.Combine(BepInEx.Paths.PluginPath,
-                "FlippingIsHardTAS", "Macros", _fileName + ".tas");
-
-            if (CustomButton(new Rect(x + 215, y, 70, 22), "Save"))
-            {
-                if (macro.HasRecordedData)
-                {
-                    try { macro.ExportMacro(path); SetStatus($"Saved to Macros/{_fileName}.tas"); }
-                    catch (Exception ex) { SetStatus("Save failed!"); TASPlugin.Logger.LogError(ex.ToString()); }
-                }
-                else SetStatus("No macro to save.");
-            }
-            if (CustomButton(new Rect(x + 291, y, 70, 22), "Load"))
-            {
-                if (!EditingLocked())
-                {
-                    _controller.EditorStopPlayback();
-                    PushUndo(macro);
-                    if (macro.ImportMacro(path))
-                    {
-                        _controller.EditorMacroImported();
-                        _selectedTick = -1;
-                        _topTick = 0;
-                        ClampScroll();
-                        SetStatus($"Loaded Macros/{_fileName}.tas — {macro.RecordedInputs.Count} ticks.");
-                    }
-                    else
-                    {
-                        PopUndoDiscard();
-                        SetStatus($"Could not load Macros/{_fileName}.tas");
-                    }
-                }
-            }
-            y += 28;
-        }
-
-        private void LoadSelectionIntoFields()
-        {
-            var macro = _controller.MacroSystem;
-            if (macro == null || _selectedTick < 0) return;
-            var st = macro.GetStateAtTick((ulong)_selectedTick);
-            if (st == null) return;
-            // Invariant culture: on Spanish Windows ToString gives "12,34" which the
-            // invariant parser in TryParseFloat rejects — Apply failed without edits.
-            var inv = System.Globalization.CultureInfo.InvariantCulture;
-            _editMoveX = st.Value.Move.x.ToString("F2", inv);
-            _editMoveY = st.Value.Move.y.ToString("F2", inv);
-            _editPan = st.Value.CameraPan.ToString("F2", inv);
-            _editTilt = st.Value.CameraTilt.ToString("F2", inv);
-        }
-
-        private void ApplyEditFields(InputMacroSystem macro)
-        {
-            if (EditingLocked()) return;
-            if (_selectedTick < 0) { SetStatus("Select a tick first (click its number)."); return; }
-            var st = macro.GetStateAtTick((ulong)_selectedTick);
-            if (st == null) { SetStatus("Selected tick has no data."); return; }
-
-            if (!TryParseFloat(_editMoveX, out float mx) || !TryParseFloat(_editMoveY, out float my) ||
-                !TryParseFloat(_editPan, out float pan) || !TryParseFloat(_editTilt, out float tilt))
-            {
-                SetStatus("Invalid numeric value.");
-                return;
-            }
-
-            mx = Mathf.Clamp(mx, -1f, 1f);
-            my = Mathf.Clamp(my, -1f, 1f);
-
-            var s = st.Value;
-            BackupMacroOnce(macro);
-            PushUndo(macro);
-
-            // Movement change forks: edit the input and drop the stale continuation
-            // (re-record forward from here). Camera-only change just re-aims and holds.
-            bool moveChanged = mx != s.Move.x || my != s.Move.y;
-            macro.SetInputAt((ulong)_selectedTick, new Vector2(mx, my), s.Jump, s.Interact, s.CameraPan, s.CameraTilt);
-
-            bool camChanged = !Mathf.Approximately(pan, s.CameraPan) || !Mathf.Approximately(tilt, s.CameraTilt);
-            if (camChanged)
-                macro.SetCameraFrom((ulong)_selectedTick, pan, tilt);
-
-            if (moveChanged)
-            {
-                macro.TruncateAt((ulong)_selectedTick + 1);
-                SetStatus($"Move edited at {_selectedTick} — forward dropped. Re-record from here.");
-            }
-            else if (camChanged)
-                SetStatus($"Camera set to {pan:F1}/{tilt:F1} from tick {_selectedTick} onward.");
-            else
-                SetStatus($"Tick {_selectedTick} unchanged.");
         }
 
         private static bool TryParseFloat(string str, out float value)
         {
-            // Accept both "12.5" and "12,5" (comma decimal separator on Spanish locales)
+            // Accept "12.5" and "12,5" (comma decimal separator on Spanish locales).
             str = (str ?? "").Trim().Replace(',', '.');
-            if (!float.TryParse(str, System.Globalization.NumberStyles.Float,
-                                System.Globalization.CultureInfo.InvariantCulture, out value))
-                return false;
-            return !float.IsNaN(value) && !float.IsInfinity(value);
+            return float.TryParse(str, NumberStyles.Float, Inv, out value)
+                   && !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
-        private void SetStatus(string msg)
+        private void SetStatus(string msg, Color color)
         {
-            _statusMsg = msg;
-            _statusTimer = 5f;
+            _status = msg;
+            _statusColor = color;
+            _statusTime = Time.unscaledTime;
         }
     }
 }

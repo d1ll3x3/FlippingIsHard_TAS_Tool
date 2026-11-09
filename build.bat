@@ -1,44 +1,48 @@
 @echo off
 setlocal enabledelayedexpansion
+REM Builds the plugin (Release) and deploys it to the game.
+REM Optional: build.bat "X:\path\to\Flipping is Hard"   (otherwise auto-detected,
+REM preferring the full game over the demo).
 
 set DLL_NAME=FlippingIsHardTAS
-set DLL_PATH=bin\Debug\net6.0\%DLL_NAME%.dll
-set PLUGIN_FOLDER=FlippingIsHardTAS
+set DLL_PATH=bin\Release\net6.0\%DLL_NAME%.dll
 
-echo Searching for game installation...
+set "GAME_PATH=%~1"
+if not "%GAME_PATH%"=="" goto found
 
-set GAME_PATH=
-for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    if exist "%%D:\SteamLibrary\steamapps\common\Flipping is Hard Demo" (
-        set GAME_PATH=%%D:\SteamLibrary\steamapps\common\Flipping is Hard Demo
-        goto found
+for %%N in ("Flipping is Hard" "Flipping is Hard Demo") do (
+    for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+        for %%R in ("SteamLibrary\steamapps\common" "Program Files\Steam\steamapps\common" "Program Files (x86)\Steam\steamapps\common") do (
+            if exist "%%D:\%%~R\%%~N\BepInEx" (
+                set "GAME_PATH=%%D:\%%~R\%%~N"
+                goto found
+            )
+        )
     )
 )
 
-echo Game not found in any SteamLibrary.
+echo Game with BepInEx not found. Pass the game folder: build.bat "X:\...\Flipping is Hard"
 pause
 exit /b 1
 
 :found
-echo Found: !GAME_PATH!
+echo Game: !GAME_PATH!
+set "PLUGIN_DIR=!GAME_PATH!\BepInEx\plugins\%DLL_NAME%"
 
-set GAME_PLUGINS=!GAME_PATH!\BepInEx\plugins\%PLUGIN_FOLDER%
-
-echo Building %DLL_NAME%...
-dotnet build -c Debug
-
+dotnet build -c Release
 if %ERRORLEVEL% NEQ 0 (
     echo BUILD FAILED
     pause
     exit /b 1
 )
 
-echo.
-echo Deploying to game...
-if not exist "!GAME_PLUGINS!" mkdir "!GAME_PLUGINS!"
-copy /Y "%DLL_PATH%" "!GAME_PLUGINS!\%DLL_NAME%.dll"
+if not exist "!PLUGIN_DIR!" mkdir "!PLUGIN_DIR!"
+copy /Y "%DLL_PATH%" "!PLUGIN_DIR!\%DLL_NAME%.dll" >nul
+if %ERRORLEVEL% NEQ 0 (
+    echo DEPLOY FAILED - is the game running? Close it and retry.
+    pause
+    exit /b 1
+)
 
-echo.
-echo Done! Plugin deployed to:
-echo !GAME_PLUGINS!
+echo Deployed to !PLUGIN_DIR!
 pause

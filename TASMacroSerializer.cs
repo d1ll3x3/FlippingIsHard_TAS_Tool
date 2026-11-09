@@ -1,56 +1,56 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEngine;
 
 namespace FlippingIsHardTAS
 {
     public static class TASMacroSerializer
     {
-        // TAS4 adds the exact rawData sbytes per tick (bit-identical resim injection).
+        // TAS4 adds the exact rawData sbytes per tick. TAS3 added the (now retired)
+        // greenzone field; TAS2 predates it. All three still import.
         private const string MAGIC_HEADER = "TAS4";
         private const string HEADER_TAS3 = "TAS3";
         private const string HEADER_TAS2 = "TAS2";
 
+        // A row is ~110 bytes; anything above this is a corrupt count, not a real run.
+        private const int MAX_ROWS = 10_000_000;
+
         public static void ExportToFile(InputMacroSystem sys, string filePath)
         {
-            var dir = Path.GetDirectoryName(filePath);
-            if (!Directory.Exists(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath));
 
-            using (var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write))
+            // Write to a temp file and swap it in, so a crash or a full disk mid-save never
+            // destroys the previous version of the macro.
+            string tmp = filePath + ".tmp";
+            using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write))
             using (var writer = new BinaryWriter(stream))
             {
-                // Write Header
                 writer.Write(MAGIC_HEADER);
-                
-                // Write Metadata
                 writer.Write(sys.RNGSeed);
                 writer.Write(sys.MaxTick);
-                writer.Write(sys.GreenzoneEnd);
-                
-                // Write Data
+                writer.Write(sys.MaxTick);   // legacy greenzone slot — always the full run now
                 writer.Write(sys.RecordedInputs.Count);
-                
-                foreach (var kvp in sys.RecordedInputs)
+
+                foreach (var kvp in sys.RecordedInputs.OrderBy(k => k.Key))
                 {
                     writer.Write(kvp.Key);
                     var state = kvp.Value;
-                    
+
                     WriteVector2(writer, state.Move);
                     WriteVector2(writer, state.Look);
                     WriteQuaternion(writer, state.CameraRotation);
                     WriteVector3(writer, state.CameraPosition);
-                    
+
                     writer.Write(state.Jump);
                     writer.Write(state.Interact);
-                    
+
                     WriteVector3(writer, state.PlayerPosition);
                     WriteQuaternion(writer, state.PlayerRotation);
                     WriteVector3(writer, state.PlayerVelocity);
                     WriteVector3(writer, state.PlayerAngularVelocity);
-                    
+
                     writer.Write(state.CameraPan);
                     writer.Write(state.CameraTilt);
 
@@ -60,70 +60,95 @@ namespace FlippingIsHardTAS
                     writer.Write(state.LookYRaw);
                 }
             }
+            File.Move(tmp, filePath, overwrite: true);
         }
 
-        public static bool ImportFromFile(InputMacroSystem sys, string filePath)
+        /// <summary>
+        /// Reads a .tas file into `sys`. The file is parsed completely before anything is
+        /// replaced, so a corrupt or truncated file leaves the current macro untouched.
+        /// </summary>
+        public static bool ImportFromFile(InputMacroSystem sys, string filePath, out string error)
         {
-            if (!File.Exists(filePath)) return false;
+            error = null;
+            if (!File.Exists(filePath)) { error = "file not found"; return false; }
 
-            using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
-            using (var reader = new BinaryReader(stream))
+            try
             {
-                var header = reader.ReadString();
-                if (header != MAGIC_HEADER && header != HEADER_TAS3 && header != HEADER_TAS2)
+                using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+                using (var reader = new BinaryReader(stream))
                 {
-                    TASPlugin.Logger.LogError("Invalid TAS macro file format.");
-                    return false;
-                }
-
-                int seed = reader.ReadInt32();
-                ulong maxTick = reader.ReadUInt64();
-                // TAS2 files predate the greenzone — all their recorded state is valid
-                ulong greenzoneEnd = header != HEADER_TAS2 ? reader.ReadUInt64() : maxTick;
-                int count = reader.ReadInt32();
-
-                sys.Clear();
-                sys.RNGSeed = seed;
-                sys.MaxTick = maxTick;
-                sys.GreenzoneEnd = greenzoneEnd;
-
-                for (int i = 0; i < count; i++)
-                {
-                    ulong tick = reader.ReadUInt64();
-                    
-                    Vector2 move = ReadVector2(reader);
-                    Vector2 look = ReadVector2(reader);
-                    Quaternion camRot = ReadQuaternion(reader);
-                    Vector3 camPos = ReadVector3(reader);
-                    
-                    bool jump = reader.ReadBoolean();
-                    bool interact = reader.ReadBoolean();
-                    
-                    Vector3 pPos = ReadVector3(reader);
-                    Quaternion pRot = ReadQuaternion(reader);
-                    Vector3 pVel = ReadVector3(reader);
-                    Vector3 pAngVel = ReadVector3(reader);
-                    
-                    float camPan = reader.ReadSingle();
-                    float camTilt = reader.ReadSingle();
-
-                    var state = new TASInputState(move, look, camRot, camPos, jump, interact, pPos, pRot, pVel, pAngVel, camPan, camTilt);
-
-                    if (header == MAGIC_HEADER)
+                    var header = reader.ReadString();
+                    if (header != MAGIC_HEADER && header != HEADER_TAS3 && header != HEADER_TAS2)
                     {
-                        state.MoveXRaw = reader.ReadSByte();
-                        state.MoveYRaw = reader.ReadSByte();
-                        state.LookXRaw = reader.ReadSByte();
-                        state.LookYRaw = reader.ReadSByte();
+                        error = "not a TAS macro file";
+                        return false;
                     }
-                    // Legacy files only stored floats; the constructor already derived the
-                    // raw bytes via QuantizeAxis (best effort — may carry quantization error).
 
-                    sys.RecordedInputs[tick] = state;
+                    int seed = reader.ReadInt32();
+                    ulong maxTick = reader.ReadUInt64();
+                    if (header != HEADER_TAS2) reader.ReadUInt64();   // legacy greenzone, ignored
+                    int count = reader.ReadInt32();
+                    if (count <= 0 || count > MAX_ROWS)
+                    {
+                        error = count == 0 ? "the macro is empty" : $"corrupt row count ({count})";
+                        return false;
+                    }
+
+                    var rows = new Dictionary<ulong, TASInputState>(count);
+                    ulong highest = 0;
+                    for (int i = 0; i < count; i++)
+                    {
+                        ulong tick = reader.ReadUInt64();
+
+                        Vector2 move = ReadVector2(reader);
+                        Vector2 look = ReadVector2(reader);
+                        Quaternion camRot = ReadQuaternion(reader);
+                        Vector3 camPos = ReadVector3(reader);
+
+                        bool jump = reader.ReadBoolean();
+                        bool interact = reader.ReadBoolean();
+
+                        Vector3 pPos = ReadVector3(reader);
+                        Quaternion pRot = ReadQuaternion(reader);
+                        Vector3 pVel = ReadVector3(reader);
+                        Vector3 pAngVel = ReadVector3(reader);
+
+                        float camPan = reader.ReadSingle();
+                        float camTilt = reader.ReadSingle();
+
+                        var state = new TASInputState(move, look, camRot, camPos, jump, interact, pPos, pRot, pVel, pAngVel, camPan, camTilt);
+
+                        // Legacy files only stored floats; the constructor already derived the
+                        // raw bytes via QuantizeAxis (best effort).
+                        if (header == MAGIC_HEADER)
+                        {
+                            state.MoveXRaw = reader.ReadSByte();
+                            state.MoveYRaw = reader.ReadSByte();
+                            state.LookXRaw = reader.ReadSByte();
+                            state.LookYRaw = reader.ReadSByte();
+                        }
+
+                        rows[tick] = state;
+                        if (tick > highest) highest = tick;
+                    }
+
+                    // Trust the rows over the header: older files could carry a stale MaxTick.
+                    if (maxTick != highest)
+                        TASPlugin.Logger.LogWarning($"TAS: {Path.GetFileName(filePath)} header says MaxTick {maxTick}, rows end at {highest} — using {highest}.");
+                    sys.ReplaceAll(rows, highest, seed);
+                    return true;
                 }
-
-                return true;
             }
+            catch (EndOfStreamException)
+            {
+                error = "the file is truncated";
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                TASPlugin.Logger.LogError($"TAS: import of {filePath} failed: {ex}");
+            }
+            return false;
         }
 
         private static void WriteVector2(BinaryWriter w, Vector2 v)
@@ -133,9 +158,7 @@ namespace FlippingIsHardTAS
         }
 
         private static Vector2 ReadVector2(BinaryReader r)
-        {
-            return new Vector2(r.ReadSingle(), r.ReadSingle());
-        }
+            => new Vector2(r.ReadSingle(), r.ReadSingle());
 
         private static void WriteVector3(BinaryWriter w, Vector3 v)
         {
@@ -145,9 +168,7 @@ namespace FlippingIsHardTAS
         }
 
         private static Vector3 ReadVector3(BinaryReader r)
-        {
-            return new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-        }
+            => new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
 
         private static void WriteQuaternion(BinaryWriter w, Quaternion q)
         {
@@ -158,8 +179,6 @@ namespace FlippingIsHardTAS
         }
 
         private static Quaternion ReadQuaternion(BinaryReader r)
-        {
-            return new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-        }
+            => new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
     }
 }

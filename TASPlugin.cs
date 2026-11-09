@@ -1,24 +1,33 @@
+using System;
+using System.Collections.Generic;
 using BepInEx;
 using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
 using Il2CppInterop.Runtime.Injection;
 using UnityEngine;
-using System;
 
 namespace FlippingIsHardTAS
 {
-    [BepInPlugin("com.flippingishard.tas", "Flipping is Hard TAS", "2.0.4")]
+    [BepInPlugin("com.flippingishard.tas", "Flipping is Hard TAS", MyPluginInfo.PLUGIN_VERSION)]
     public class TASPlugin : BasePlugin
     {
         internal static ManualLogSource Logger { get; private set; }
+
+        private static readonly HashSet<string> _warned = new HashSet<string>();
+
+        /// <summary>
+        /// Logs a warning once per key. For failures inside per-frame code paths, where
+        /// logging every occurrence would flood the log.
+        /// </summary>
+        internal static void WarnOnce(string key, string message)
+        {
+            if (_warned.Add(key)) Logger.LogWarning(message);
+        }
+
         public override void Load()
         {
             Logger = Log;
-            
             TASConfig.Load();
-
-            Logger.LogInfo("Flipping is Hard TAS plugin loaded!");
-            Logger.LogInfo("Controls: B (Settings), T (TAS Editor), F9 (Record), F10 (Play) — all rebindable in-game.");
 
             // NOTE: we intentionally do NOT Harmony-patch any IL2CPP game method. The old
             // GameInputPatch hooked PlayerInputHandler.IsHeld/WasPressed/MoveInput/LookInput,
@@ -26,115 +35,89 @@ namespace FlippingIsHardTAS
             // replay doesn't need them: the trajectory comes from per-tick STATE injection
             // (OnPrePhysicsSimulation) and inputs from rawData FIELD writes (resolved by
             // name — stable across versions). No method patching = works on all versions.
-
             try
             {
-                // Register our custom MonoBehaviour with IL2CPP before using AddComponent
                 ClassInjector.RegisterTypeInIl2Cpp<TASBehaviour>();
-
                 var go = new GameObject("FlippingIsHardTAS");
                 GameObject.DontDestroyOnLoad(go);
                 go.AddComponent<TASBehaviour>();
-
-                Logger.LogInfo("Trainer behaviour attached successfully");
+                Logger.LogInfo($"Flipping is Hard TAS {MyPluginInfo.PLUGIN_VERSION} loaded — waiting for a level.");
             }
             catch (Exception ex)
             {
-                Logger.LogError($"Error loading trainer: {ex}");
+                Logger.LogError($"Failed to attach the TAS behaviour: {ex}");
             }
         }
     }
 
     /// <summary>
-    /// Main MonoBehaviour for the trainer.
+    /// Host MonoBehaviour: forwards Unity callbacks to the controller once a player exists.
     /// Must have the IntPtr constructor for IL2CPP interop.
     /// </summary>
     public class TASBehaviour : MonoBehaviour
     {
-        // Required by IL2CPP interop
         public TASBehaviour(IntPtr ptr) : base(ptr) { }
 
         private TASController _controller;
-        private TASBindMenuRenderer _bindMenuRenderer;
+        private TASBindMenuRenderer _bindMenu;
         private GameObjectFinder _finder;
-        private bool _initialized = false;
-        private float _timer = 0f;
-        private float _nextAttempt = 2f;   // first attempt after 2s
+        private float _nextAttempt = 2f;
         private const float RETRY_INTERVAL = 3f;
 
         void Awake()
         {
             _finder = new GameObjectFinder();
-            TASPlugin.Logger.LogInfo("TASBehaviour awake, waiting for game scene...");
         }
 
         void Update()
         {
-            if (_initialized)
+            if (_controller != null)
             {
-                _controller?.Update();
+                _controller.Update();
                 return;
             }
 
-            _timer += Time.deltaTime;
-            if (_timer >= _nextAttempt)
+            if (Time.unscaledTime >= _nextAttempt)
             {
-                _timer = 0f;
-                _nextAttempt = RETRY_INTERVAL;
+                _nextAttempt = Time.unscaledTime + RETRY_INTERVAL;
                 TryInitialize();
             }
         }
 
         void FixedUpdate()
         {
-            if (_initialized)
-            {
-                _controller?.FixedUpdate();
-            }
+            _controller?.FixedUpdate();
         }
 
         public void OnGUI()
         {
-            _controller?.OnGUI();
-            _bindMenuRenderer?.Draw();
+            if (_controller == null) return;
+            _controller.OnGUI();
+            // Drawn last so the modal settings window sits on top of the editor.
+            TASGui.CurrentLayer = 1;
+            _bindMenu.Draw();
+            TASGui.CurrentLayer = 0;
+            TASGui.DrawToasts();
         }
 
         private void TryInitialize()
         {
+            // The controller waits for a real level: the player and the camera must exist.
+            if (_finder.FindPlayer() == null || _finder.FindCamera() == null) return;
+
             try
             {
-                var player = _finder.FindPlayer();
-                var camera = _finder.FindCamera();
-
-                if (player != null && camera != null)
-                {
-                    TASPlugin.Logger.LogInfo($"Found player: {player.name}");
-                    try
-                    {
-                        var gameObjectFinder = new GameObjectFinder();
-                        _bindMenuRenderer = new TASBindMenuRenderer(gameObjectFinder);
-                        _controller = new TASController();
-                        _controller.Initialize(gameObjectFinder, _bindMenuRenderer);
-                        _controller.enabled = true;
-                        _initialized = true;
-                    }
-                    catch (Exception ex)
-                    {
-                        TASPlugin.Logger.LogError($"Error in TryInitialize inner block: {ex}");
-                    }
-                    TASPlugin.Logger.LogInfo("Trainer initialized successfully!");
-                }
-                else
-                {
-                    if (player == null) TASPlugin.Logger.LogInfo("Player not found yet, retrying...");
-                    if (camera == null) TASPlugin.Logger.LogInfo("Camera not found yet, retrying...");
-                }
+                var bindMenu = new TASBindMenuRenderer(_finder);
+                var controller = new TASController();
+                if (!controller.Initialize(_finder, bindMenu)) return;
+                _bindMenu = bindMenu;
+                _controller = controller;
+                TASPlugin.Logger.LogInfo($"TAS ready. [{TASConfig.Settings.OpenEditor}] editor · [{TASConfig.Settings.OpenBindMenu}] settings · [{TASConfig.Settings.ToggleHelp}] key list.");
             }
             catch (Exception ex)
             {
-                TASPlugin.Logger.LogError($"Error during initialization: {ex}");
+                TASPlugin.Logger.LogError($"TAS initialization failed (will retry): {ex}");
             }
         }
     }
 }
-

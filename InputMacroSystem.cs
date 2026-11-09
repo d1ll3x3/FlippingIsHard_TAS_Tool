@@ -1,241 +1,285 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
 namespace FlippingIsHardTAS
 {
+    /// <summary>
+    /// The recorded run: one full state (inputs + rigidbody + camera) per physics tick.
+    /// Playback injects these states verbatim (bit-perfect, no resimulation), so every
+    /// stored tick is always valid and "the run" is simply the rows up to MaxTick.
+    /// </summary>
     public class InputMacroSystem
     {
         public bool IsRecording { get; private set; }
         public bool IsPlaying { get; private set; }
         public bool IsEditMode { get; private set; }
         public int RNGSeed { get; set; }
-        public ulong MaxTick { get; set; }
+        public ulong MaxTick { get; private set; }
 
-        /// <summary>
-        /// Last tick whose recorded physics state is still valid ("greenzone", like TAS Studio).
-        /// Up to this tick, playback injects the recorded physics state for perfect determinism.
-        /// Beyond it (after an input edit in the editor), playback injects ONLY inputs and lets
-        /// PhysX resimulate, re-capturing the state as it goes to extend the greenzone again.
-        /// </summary>
-        public ulong GreenzoneEnd { get; set; }
-        
-        public Dictionary<ulong, TASInputState> RecordedInputs = new Dictionary<ulong, TASInputState>();
+        public Dictionary<ulong, TASInputState> RecordedInputs { get; private set; } = new Dictionary<ulong, TASInputState>();
 
-        public void ExportMacro(string path)
+        /// <summary>Bumped on every mutation — lets the UI cache derived values (FirstTick).</summary>
+        public int Version { get; private set; }
+
+        private ulong _firstTickCache;
+        private int _firstTickVersion = -1;
+
+        /// <summary>Lowest recorded tick (recordings start wherever the tick counter was).</summary>
+        public ulong FirstTick
         {
-            TASMacroSerializer.ExportToFile(this, path);
+            get
+            {
+                if (_firstTickVersion != Version)
+                {
+                    _firstTickCache = 0;
+                    bool any = false;
+                    foreach (var k in RecordedInputs.Keys)
+                        if (!any || k < _firstTickCache) { _firstTickCache = k; any = true; }
+                    _firstTickVersion = Version;
+                }
+                return _firstTickCache;
+            }
         }
 
-        public bool ImportMacro(string path)
-        {
-            return TASMacroSerializer.ImportFromFile(this, path);
-        }
+        public bool HasRecordedData => RecordedInputs.Count > 0;
 
-        private TASInputState _currentPlaybackState;
-        private TASInputState _previousPlaybackState;
+        /// <summary>State injected on the current playback tick, and the one before it (for button edges).</summary>
+        public TASInputState Current { get; private set; }
+        public TASInputState Previous { get; private set; }
+        /// <summary>False when the playback tick has no row — nothing must be injected then.</summary>
+        public bool CurrentValid { get; private set; }
 
+        private void Touch() => Version++;
+
+        // ── Lifecycle ─────────────────────────────────────────────────────
+
+        /// <summary>Drops the run and every mode flag. Used when leaving the level.</summary>
         public void Clear()
         {
             IsRecording = false;
             IsEditMode = false;
-            GreenzoneEnd = 0;
+            IsPlaying = false;
+            MaxTick = 0;
             RecordedInputs.Clear();
-            _currentPlaybackState = default;
-            _previousPlaybackState = default;
-            EnableInputSystemDevices();
+            Current = default;
+            Previous = default;
+            CurrentValid = false;
+            Touch();
+            SetGameInputDevices(true);
+        }
+
+        /// <summary>Leaves every mode but keeps the run (level reload / back to menu).</summary>
+        public void ResetModes()
+        {
+            IsRecording = false;
+            IsEditMode = false;
+            IsPlaying = false;
+            CurrentValid = false;
+            SetGameInputDevices(true);
+        }
+
+        /// <summary>Replaces the whole run (file import, undo/redo).</summary>
+        public void ReplaceAll(Dictionary<ulong, TASInputState> rows, ulong maxTick, int seed)
+        {
+            RecordedInputs = rows;
+            MaxTick = maxTick;
+            RNGSeed = seed;
+            Touch();
         }
 
         public void StartRecording()
         {
             IsRecording = true;
             IsPlaying = false;
+            IsEditMode = false;
             RecordedInputs.Clear();
             MaxTick = 0;
-            GreenzoneEnd = 0;
+            Touch();
             RNGSeed = UnityEngine.Random.Range(int.MinValue, int.MaxValue);
             UnityEngine.Random.InitState(RNGSeed);
-            TASPlugin.Logger.LogInfo($"TAS: Started Recording Inputs with Seed: {RNGSeed}");
+            TASPlugin.Logger.LogInfo($"TAS: recording started (seed {RNGSeed}).");
         }
 
         public void StopRecording()
         {
             IsRecording = false;
-            TASPlugin.Logger.LogInfo("TAS: Stopped Recording");
+            IsEditMode = false;
+            TASPlugin.Logger.LogInfo($"TAS: recording stopped — {RecordedInputs.Count} ticks.");
         }
-        
+
         /// <summary>
-        /// Enters Edit Mode at a tick — NON-destructive: all recorded data is kept. Inside Edit
-        /// Mode you frame-step the recording non-destructively (forward replays, rewind rewinds);
-        /// the forward ticks are dropped only when you actually input a change (handled by the
-        /// controller's frame-step logic). Lets you scrub to the edit point without losing work.
+        /// Enters Edit Mode — NON-destructive: all recorded data is kept. Frame-stepping over
+        /// existing rows navigates them; the rows after the cursor are dropped only when you
+        /// actually input something (fork), handled by the controller.
         /// </summary>
         public void EnterEditMode(ulong currentTick)
         {
             IsPlaying = false;
             IsEditMode = true;
             IsRecording = true;
-            EnableInputSystemDevices();
-            TASPlugin.Logger.LogInfo($"TAS: Entered Edit Mode at tick {currentTick} — kept all {RecordedInputs.Count} ticks (MaxTick={MaxTick}); navigate freely, edits fork from where you change input.");
+            SetGameInputDevices(true);
+            TASPlugin.Logger.LogInfo($"TAS: Edit Mode at tick {currentTick} ({RecordedInputs.Count} ticks kept, MaxTick {MaxTick}).");
         }
 
-        /// <summary>
-        /// Exits Edit Mode: stops recording user inputs. The macro now contains
-        /// the original prefix + the newly recorded suffix.
-        /// </summary>
         public void ExitEditMode()
         {
             IsRecording = false;
             IsEditMode = false;
-            TASPlugin.Logger.LogInfo($"TAS: Exited Edit Mode. Macro has {RecordedInputs.Count} total ticks (MaxTick={MaxTick}).");
+            TASPlugin.Logger.LogInfo($"TAS: Edit Mode off — {RecordedInputs.Count} ticks (MaxTick {MaxTick}).");
         }
-        
+
         public void StartPlaying()
         {
             IsPlaying = true;
-            _currentPlaybackState = default;
-            _previousPlaybackState = default;
+            Current = default;
+            Previous = default;
+            CurrentValid = false;
             UnityEngine.Random.InitState(RNGSeed);
-            TASPlugin.Logger.LogInfo($"TAS: Started Playing Inputs with Seed: {RNGSeed}");
-            DisableInputSystemDevices();
+            // Real keyboard/mouse must not reach the game during the replay.
+            SetGameInputDevices(false);
+            TASPlugin.Logger.LogInfo($"TAS: playback started (seed {RNGSeed}).");
         }
 
         public void StopPlaying()
         {
             IsPlaying = false;
-            TASPlugin.Logger.LogInfo("TAS: Stopped Playing");
-            EnableInputSystemDevices();
+            SetGameInputDevices(true);
+            TASPlugin.Logger.LogInfo("TAS: playback stopped.");
         }
-        
+
         /// <summary>
-        /// Re-applies the playback device lock. The bind menu enables the input devices
-        /// unconditionally when it closes; if a replay is running they must stay disabled
-        /// or real keyboard/mouse input bleeds into the playback.
+        /// Re-applies the playback device lock. The bind menu re-enables the devices when it
+        /// closes; during a replay they must stay disabled or real input bleeds into it.
         /// </summary>
         public void ReapplyDeviceLock()
         {
-            if (IsPlaying) DisableInputSystemDevices();
+            if (IsPlaying) SetGameInputDevices(false);
         }
 
-        private void DisableInputSystemDevices()
+        private static void SetGameInputDevices(bool enabled)
         {
             try
             {
-                if (UnityEngine.InputSystem.Keyboard.current != null)
-                    UnityEngine.InputSystem.InputSystem.DisableDevice(UnityEngine.InputSystem.Keyboard.current);
-                if (UnityEngine.InputSystem.Mouse.current != null)
-                    UnityEngine.InputSystem.InputSystem.DisableDevice(UnityEngine.InputSystem.Mouse.current);
+                var kb = UnityEngine.InputSystem.Keyboard.current;
+                var mouse = UnityEngine.InputSystem.Mouse.current;
+                if (enabled)
+                {
+                    if (kb != null) UnityEngine.InputSystem.InputSystem.EnableDevice(kb);
+                    if (mouse != null) UnityEngine.InputSystem.InputSystem.EnableDevice(mouse);
+                }
+                else
+                {
+                    if (kb != null) UnityEngine.InputSystem.InputSystem.DisableDevice(kb);
+                    if (mouse != null) UnityEngine.InputSystem.InputSystem.DisableDevice(mouse);
+                }
             }
-            catch { }
-        }
-
-        private void EnableInputSystemDevices()
-        {
-            try
+            catch (Exception ex)
             {
-                if (UnityEngine.InputSystem.Keyboard.current != null)
-                    UnityEngine.InputSystem.InputSystem.EnableDevice(UnityEngine.InputSystem.Keyboard.current);
-                if (UnityEngine.InputSystem.Mouse.current != null)
-                    UnityEngine.InputSystem.InputSystem.EnableDevice(UnityEngine.InputSystem.Mouse.current);
+                TASPlugin.WarnOnce("devices", $"Could not {(enabled ? "enable" : "disable")} input devices: {ex.Message}");
             }
-            catch { }
-        }
-        
-        public bool HasRecordedData => RecordedInputs.Count > 0;
-        
-        /// <summary>
-        /// Truncates all recorded data from this tick onward. Every remaining tick keeps its
-        /// valid recorded state (no resim), so the greenzone simply follows MaxTick.
-        /// </summary>
-        public void TruncateAt(ulong tick)
-        {
-            var keysToRemove = new List<ulong>();
-            foreach (var kvp in RecordedInputs)
-            {
-                if (kvp.Key >= tick)
-                    keysToRemove.Add(kvp.Key);
-            }
-            foreach (var key in keysToRemove)
-                RecordedInputs.Remove(key);
-            if (tick > 0) MaxTick = tick - 1;
-            GreenzoneEnd = MaxTick;
         }
 
-        /// <summary>
-        /// Inserts a new frame at the given tick, shifting every later entry up by one.
-        /// The new row duplicates the previous tick's recorded state (replay shows a small
-        /// position seam at the insertion point — expected without resim).
-        /// </summary>
-        public void InsertTickAt(ulong tick)
-        {
-            var shifted = new Dictionary<ulong, TASInputState>(RecordedInputs.Count + 1);
-            foreach (var kvp in RecordedInputs)
-                shifted[kvp.Key >= tick ? kvp.Key + 1 : kvp.Key] = kvp.Value;
-
-            TASInputState template;
-            if (!RecordedInputs.TryGetValue(tick > 0 ? tick - 1 : tick, out template))
-                RecordedInputs.TryGetValue(tick, out template);
-            shifted[tick] = template;
-
-            RecordedInputs = shifted;
-            MaxTick++;
-            GreenzoneEnd = MaxTick;
-        }
-
-        /// <summary>
-        /// Deletes the frame at the given tick, shifting every later entry down by one.
-        /// </summary>
-        public void DeleteTickAt(ulong tick)
-        {
-            var shifted = new Dictionary<ulong, TASInputState>(RecordedInputs.Count);
-            foreach (var kvp in RecordedInputs)
-            {
-                if (kvp.Key == tick) continue;
-                shifted[kvp.Key > tick ? kvp.Key - 1 : kvp.Key] = kvp.Value;
-            }
-
-            RecordedInputs = shifted;
-            if (MaxTick > 0) MaxTick--;
-            GreenzoneEnd = MaxTick;
-        }
+        // ── Recording / playback ──────────────────────────────────────────
 
         public void RecordTick(ulong currentTick, TASInputState state)
         {
             if (!IsRecording) return;
             RecordedInputs[currentTick] = state;
             if (currentTick > MaxTick) MaxTick = currentTick;
-            // Real recording always captures real physics state — greenzone extends with it
-            if (currentTick > GreenzoneEnd) GreenzoneEnd = currentTick;
+            Touch();
         }
 
-        /// <summary>
-        /// Replaces the input portion of the state at a tick (editor use). Data-only: with no
-        /// resimulation, this edits the stored .tas but does NOT change the replayed trajectory
-        /// (the recorded physics state is what plays back). To actually change a run, re-record
-        /// from this tick. The recorded physics state stays valid, so greenzone is untouched.
-        /// </summary>
-        public void SetInputAt(ulong tick, Vector2 move, bool jump, bool interact, float camPan, float camTilt)
+        public void PlaybackTick(ulong currentTick)
         {
-            if (!RecordedInputs.TryGetValue(tick, out var state)) return;
+            if (!IsPlaying) return;
+            Previous = Current;
+            CurrentValid = RecordedInputs.TryGetValue(currentTick, out var state);
+            Current = CurrentValid ? state : default;
+        }
 
-            bool changed = state.Move != move || state.Jump != jump || state.Interact != interact ||
-                           state.CameraPan != camPan || state.CameraTilt != camTilt;
-            if (!changed) return;
+        /// <summary>Points both Current and Previous at a tick (seek/rewind: no button edge).</summary>
+        public void SeekPlayback(ulong tick)
+        {
+            CurrentValid = RecordedInputs.TryGetValue(tick, out var st);
+            Current = st;
+            Previous = st;
+        }
 
-            state.Move = move;
-            state.Jump = jump;
-            state.Interact = interact;
-            state.CameraPan = camPan;
-            state.CameraTilt = camTilt;
-            state.MoveXRaw = TASInputState.QuantizeAxis(move.x);
-            state.MoveYRaw = TASInputState.QuantizeAxis(move.y);
-            RecordedInputs[tick] = state;
+        public TASInputState? GetStateAtTick(ulong tick)
+            => RecordedInputs.TryGetValue(tick, out var state) ? state : (TASInputState?)null;
+
+        // ── Timeline surgery (editor) ─────────────────────────────────────
+
+        /// <summary>Drops every row from this tick onward.</summary>
+        public void TruncateAt(ulong tick)
+        {
+            var keys = new List<ulong>();
+            foreach (var k in RecordedInputs.Keys)
+                if (k >= tick) keys.Add(k);
+            foreach (var k in keys)
+                RecordedInputs.Remove(k);
+            MaxTick = tick > 0 && RecordedInputs.Count > 0 ? Math.Min(MaxTick, tick - 1) : 0;
+            Touch();
         }
 
         /// <summary>
-        /// Sets the camera orbit (pan/tilt) on EVERY tick from fromTick to the end. The replay
-        /// renders the camera from these orbital axes, so the edited orientation holds from
-        /// fromTick onward until a later edit (at a higher tick) overrides it. Lets the user
-        /// "aim the camera and have it stay there."
+        /// Inserts `count` frames at `tick`, shifting later rows up. The new rows duplicate the
+        /// previous tick's state (replay shows a short freeze there — expected without resim).
+        /// </summary>
+        public void InsertTicksAt(ulong tick, int count)
+        {
+            if (count <= 0) return;
+            if (!RecordedInputs.TryGetValue(tick > 0 ? tick - 1 : tick, out var template))
+                RecordedInputs.TryGetValue(tick, out template);
+
+            var shifted = new Dictionary<ulong, TASInputState>(RecordedInputs.Count + count);
+            foreach (var kvp in RecordedInputs)
+                shifted[kvp.Key >= tick ? kvp.Key + (ulong)count : kvp.Key] = kvp.Value;
+            for (int i = 0; i < count; i++)
+                shifted[tick + (ulong)i] = template;
+
+            RecordedInputs = shifted;
+            MaxTick += (ulong)count;
+            Touch();
+        }
+
+        /// <summary>Deletes the frames from..to (inclusive), shifting later rows down.</summary>
+        public void DeleteRange(ulong from, ulong to)
+        {
+            if (to < from) return;
+            ulong n = to - from + 1;
+            var shifted = new Dictionary<ulong, TASInputState>(RecordedInputs.Count);
+            foreach (var kvp in RecordedInputs)
+            {
+                if (kvp.Key >= from && kvp.Key <= to) continue;
+                shifted[kvp.Key > to ? kvp.Key - n : kvp.Key] = kvp.Value;
+            }
+            RecordedInputs = shifted;
+            ulong removed = Math.Min(n, MaxTick >= from ? MaxTick - from + 1 : 0);
+            MaxTick = MaxTick >= removed ? MaxTick - removed : 0;
+            Touch();
+        }
+
+        /// <summary>
+        /// Overwrites rows starting at `at` with full recorded states (inputs + physics +
+        /// camera), extending the run if they go past its end. Because the replay injects
+        /// state, the pasted segment plays back exactly — with a seam at its boundaries.
+        /// </summary>
+        public void PasteStates(ulong at, IList<TASInputState> states)
+        {
+            for (int i = 0; i < states.Count; i++)
+            {
+                ulong t = at + (ulong)i;
+                RecordedInputs[t] = states[i];
+                if (t > MaxTick) MaxTick = t;
+            }
+            Touch();
+        }
+
+        /// <summary>
+        /// Sets the camera orbit (pan/tilt) on every tick from fromTick to the end. The replay
+        /// drives the orbital axes from these values, so the edited aim holds until a later edit.
         /// </summary>
         public void SetCameraFrom(ulong fromTick, float pan, float tilt)
         {
@@ -247,172 +291,13 @@ namespace FlippingIsHardTAS
                 st.CameraTilt = tilt;
                 RecordedInputs[key] = st;
             }
+            Touch();
         }
 
-        /// <summary>
-        /// Overwrites the FULL recorded state (inputs + physics + camera) at a tick. Used by
-        /// timeline surgery (paste): the replay then reproduces the pasted segment's real
-        /// trajectory, with a possible position seam at the boundary.
-        /// </summary>
-        public void SetFullStateAt(ulong tick, TASInputState state)
-        {
-            if (tick > MaxTick) return;
-            RecordedInputs[tick] = state;
-            if (tick > GreenzoneEnd) GreenzoneEnd = tick;
-        }
+        // ── File I/O ──────────────────────────────────────────────────────
 
-        public void PlaybackTick(ulong currentTick)
-        {
-            if (!IsPlaying) return;
+        public void ExportMacro(string path) => TASMacroSerializer.ExportToFile(this, path);
 
-            _previousPlaybackState = _currentPlaybackState;
-
-            if (RecordedInputs.TryGetValue(currentTick, out var state))
-            {
-                _currentPlaybackState = state;
-            }
-            else
-            {
-                _currentPlaybackState = default;
-            }
-        }
-
-        public TASInputState? GetStateAtTick(ulong tick)
-        {
-            if (RecordedInputs.TryGetValue(tick, out var state))
-                return state;
-            return null;
-        }
-
-        public Vector2 GetCurrentMoveInput()
-        {
-            return _currentPlaybackState.Move;
-        }
-
-        public Vector2 GetCurrentLookInput()
-        {
-            return _currentPlaybackState.Look;
-        }
-
-        /// <summary>Exact rawData sbytes captured at record time (bit-identical injection).</summary>
-        public (sbyte x, sbyte y) GetCurrentMoveRaw()
-        {
-            return (_currentPlaybackState.MoveXRaw, _currentPlaybackState.MoveYRaw);
-        }
-
-        public (sbyte x, sbyte y) GetCurrentLookRaw()
-        {
-            return (_currentPlaybackState.LookXRaw, _currentPlaybackState.LookYRaw);
-        }
-
-        public Quaternion GetCurrentCameraRotation()
-        {
-            if (IsPlaying && HasRecordedData)
-            {
-                var q = _currentPlaybackState.CameraRotation;
-                q.Normalize();
-                return q;
-            }
-            
-            if (Camera.main != null)
-                return Camera.main.transform.rotation;
-                
-            return Quaternion.identity;
-        }
-
-        public Quaternion GetInterpolatedCameraRotation(float t)
-        {
-            if (IsPlaying && HasRecordedData)
-            {
-                var q = Quaternion.SlerpUnclamped(_previousPlaybackState.CameraRotation, _currentPlaybackState.CameraRotation, t);
-                q.Normalize();
-                return q;
-            }
-            
-            return GetCurrentCameraRotation();
-        }
-
-        public Vector3 GetCurrentCameraPosition()
-        {
-            if (IsPlaying && HasRecordedData)
-                return _currentPlaybackState.CameraPosition;
-            
-            if (Camera.main != null)
-                return Camera.main.transform.position;
-                
-            return Vector3.zero;
-        }
-
-        public Vector3 GetInterpolatedCameraPosition(float t)
-        {
-            if (IsPlaying && HasRecordedData)
-                return Vector3.LerpUnclamped(_previousPlaybackState.CameraPosition, _currentPlaybackState.CameraPosition, t);
-            
-            return GetCurrentCameraPosition();
-        }
-
-        public bool GetButtonHeld(int btn)
-        {
-            if (btn == 4) return _currentPlaybackState.Jump;
-            if (btn == 8) return _currentPlaybackState.Interact;
-            return false;
-        }
-
-        public bool GetButtonPressed(int btn)
-        {
-            if (btn == 4) return _currentPlaybackState.Jump && !_previousPlaybackState.Jump;
-            if (btn == 8) return _currentPlaybackState.Interact && !_previousPlaybackState.Interact;
-            return false;
-        }
-
-        public bool GetButtonReleased(int btn)
-        {
-            if (btn == 4) return !_currentPlaybackState.Jump && _previousPlaybackState.Jump;
-            if (btn == 8) return !_currentPlaybackState.Interact && _previousPlaybackState.Interact;
-            return false;
-        }
-
-        /// <summary>
-        /// Returns the exact world-space linear velocity of the player recorded during this tick.
-        /// Used to override physics after input injection, ensuring deterministic replay
-        /// regardless of camera orientation drift.
-        /// </summary>
-        public Vector3 GetCurrentPlayerVelocity()
-        {
-            return _currentPlaybackState.PlayerVelocity;
-        }
-
-        public Vector3 GetCurrentPlayerAngularVelocity()
-        {
-            return _currentPlaybackState.PlayerAngularVelocity;
-        }
-        
-        public float GetCurrentCameraPan()
-        {
-            return _currentPlaybackState.CameraPan;
-        }
-        
-        public float GetCurrentCameraTilt()
-        {
-            return _currentPlaybackState.CameraTilt;
-        }
-
-        /// <summary>
-        /// Returns the exact world-space position recorded for this tick.
-        /// Injected in OnPostTick (after FishNet Reconcile) to override any server correction.
-        /// </summary>
-        public Vector3 GetCurrentPlayerPosition()
-        {
-            return _currentPlaybackState.PlayerPosition;
-        }
-
-        /// <summary>
-        /// Returns the exact world-space rotation recorded for this tick.
-        /// Injected in OnPostTick (after FishNet Reconcile) to override any server correction.
-        /// </summary>
-        public Quaternion GetCurrentPlayerRotation()
-        {
-            return _currentPlaybackState.PlayerRotation;
-        }
+        public bool ImportMacro(string path, out string error) => TASMacroSerializer.ImportFromFile(this, path, out error);
     }
 }

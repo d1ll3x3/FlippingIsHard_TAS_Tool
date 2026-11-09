@@ -2,439 +2,238 @@ using UnityEngine;
 
 namespace FlippingIsHardTAS
 {
+    /// <summary>Everything the HUD shows, filled by the controller once per frame.</summary>
+    public struct HudState
+    {
+        public bool Recording, Editing, Playing, Paused, SlowMo, FastForward;
+        public float SpeedFactor;
+        public ulong Tick, MaxTick;
+        public int Rows;
+        public bool HasSavestate;
+        public ulong SavestateTick;
+        public InputPins Pins;
+        public Vector3 Position;
+        public float Speed;
+        public sbyte LiveMoveX, LiveMoveY;
+        public bool LiveJump, LiveInteract;
+    }
+
+    /// <summary>
+    /// In-game HUD: a compact status panel (bottom-left), an optional key list above it,
+    /// a position/speed readout (top-right) and the input display while recording.
+    /// Non-interactive, so it scales by multiplying sizes (HUD Scale setting).
+    /// </summary>
     public class OverlayRenderer
     {
-        // Overlay data
-        private Vector3 _currentPosition = Vector3.zero;
-        private bool _hasSavedPosition = false;
-        private bool _isRecording = false;
-        private bool _isPlaying = false;
-        private bool _isPaused = false;
-        private bool _isSlowMo = false;
-        private bool _isSlowMoBoost = false;
-        private bool _isEditMode = false;
-        private bool _isFastForward = false;
-        private ulong _currentTick = 0;
-        private bool _showOverlay = true;
+        private HudState _s;
+        private bool _show = true;
 
-        // Coordinate caching
-        private Vector3? _cachedCoords = null;
-        private string _cachedHeightStr = "HEIGHT: 0.0 M";
-        private string _cachedCoordsStr = "XYZ: 0.0, 0.0, 0.0";
-        private float _lastSpeed = -1f;
-        private string _cachedSpeedStr = "SPEED: 0.0 M/S";
+        // Strings rebuilt only when their value changes (OnGUI runs several times a frame).
+        private ulong _tickShown = ulong.MaxValue, _maxShown = ulong.MaxValue;
+        private string _tickStr = "", _maxStr = "";
+        private Vector3 _posShown = new Vector3(float.NaN, 0, 0);
+        private float _speedShown = -1f;
+        private string _speedStr = "", _heightStr = "", _xyzStr = "";
 
-        // Base layout constants (scaled by OverlayScale at draw time)
-        private const float BASE_CTRL_W = 420f;
-        private const float BASE_COORD_W = 240f;
-        private const float BASE_COORD_H = 92f;
-        private const float BASE_PAD = 20f;
-        private const float BASE_LINE_H = 22f;
-        private const float BASE_SECTION_H = 20f;
+        private const float PAD = 16f;
 
-        // Colors
-        private readonly Color _bgColor     = new Color(0.06f, 0.06f, 0.06f, 0.88f);
-        private readonly Color _borderColor = new Color(0.35f, 0.6f,  1.0f,  1.0f);
-        private readonly Color _headerColor = new Color(0.0f,  0.85f, 1.0f,  1.0f);
-        private readonly Color _savedColor  = new Color(0.2f,  1.0f,  0.4f,  1.0f);
-        private readonly Color _recColor    = new Color(1.0f,  0.25f, 0.25f, 1.0f);
-        private readonly Color _playColor   = new Color(0.0f,  1.0f,  1.0f,  1.0f);
-        private readonly Color _pauseColor  = new Color(1.0f,  0.75f, 0.2f,  1.0f);
-        private readonly Color _dimColor    = new Color(0.65f, 0.65f, 0.65f, 1.0f);
-        private readonly Color _keyColor    = new Color(1.0f,  0.85f, 0.4f,  1.0f);
-        private readonly Color _sectionColor= new Color(0.5f,  0.75f, 1.0f,  1.0f);
-
-        // Styles (recreated when scale changes)
-        private GUIStyle _styleHeader;
-        private GUIStyle _styleText;
-        private GUIStyle _styleKey;
-        private GUIStyle _styleSection;
-        private float _cachedScale = -1f;
-
-        private ulong _greenzoneEnd = 0;
-        private ulong _recordedCount = 0;   // number of valid recorded ticks (no-data excluded)
-
-        // Live held input — what will be recorded on the next frame-advance tick.
-        private int _liveMoveX, _liveMoveY, _liveLookX, _liveLookY;
-        private bool _liveJump, _liveInteract;
-
-        /// <summary>Feeds the live held input (raw sbytes / button state) for the input display.</summary>
-        public void UpdateLiveInput(int moveX, int moveY, bool jump, bool interact, int lookX, int lookY)
+        public void SetState(HudState s)
         {
-            _liveMoveX = moveX; _liveMoveY = moveY;
-            _liveJump = jump;   _liveInteract = interact;
-            _liveLookX = lookX; _liveLookY = lookY;
+            _s = s;
+            _show = Application.isFocused;
+
+            if (s.Tick != _tickShown) { _tickShown = s.Tick; _tickStr = s.Tick.ToString(); }
+            if (s.MaxTick != _maxShown) { _maxShown = s.MaxTick; _maxStr = s.MaxTick.ToString(); }
+            if (float.IsNaN(_posShown.x) || (s.Position - _posShown).sqrMagnitude > 0.0025f)
+            {
+                _posShown = s.Position;
+                _heightStr = $"{s.Position.y:F1} m";
+                _xyzStr = $"{s.Position.x:F1}, {s.Position.y:F1}, {s.Position.z:F1}";
+            }
+            if (Mathf.Abs(_speedShown - s.Speed) > 0.05f)
+            {
+                _speedShown = s.Speed;
+                _speedStr = $"{s.Speed:F1} m/s";
+            }
         }
 
-        public void UpdateData(Vector3 pos, float speed, bool hasSaved, bool isRecording,
-                               bool isPlaying, bool isPaused, ulong currentTick,
-                               bool isSlowMo = false, bool isSlowMoBoost = false, bool isFastForward = false, bool isEditMode = false,
-                               ulong greenzoneEnd = 0, ulong recordedCount = 0)
-        {
-            if (_cachedCoords == null || Vector3.Distance(_currentPosition, pos) > 0.05f)
-            {
-                _currentPosition = pos;
-                _cachedHeightStr = $"HEIGHT: {_currentPosition.y:F1} M";
-                _cachedCoordsStr = $"XYZ: {_currentPosition.x:F1}, {_currentPosition.y:F1}, {_currentPosition.z:F1}";
-                _cachedCoords = pos;
-            }
+        private static float Scale => Mathf.Clamp(TASConfig.Settings.OverlayScale, 0.5f, 2.0f);
 
-            if (Mathf.Abs(_lastSpeed - speed) > 0.1f)
-            {
-                _lastSpeed = speed;
-                _cachedSpeedStr = $"SPEED: {speed:F1} M/S";
-            }
-
-            _hasSavedPosition = hasSaved;
-            _isRecording      = isRecording;
-            _isPlaying        = isPlaying;
-            _isPaused         = isPaused;
-            _isSlowMo         = isSlowMo;
-            _isSlowMoBoost    = isSlowMoBoost;
-            _isEditMode       = isEditMode;
-            _isFastForward    = isFastForward;
-            _currentTick      = currentTick;
-            _greenzoneEnd     = greenzoneEnd;
-            _recordedCount    = recordedCount;
-            _showOverlay      = Application.isFocused;
-        }
-
-        public void RefreshKeybinds() { }
-
-        private float Scale => Mathf.Clamp(TASConfig.Settings.OverlayScale, 0.25f, 2.0f);
+        private static int Font(float size, float k) => Mathf.Max(8, Mathf.RoundToInt(size * k));
 
         public void OnGUI()
         {
-            if (!_showOverlay) return;
-            EnsureStyles();
-            DrawControls();
-            DrawCoords();
-            if (_isRecording || _isEditMode)
-                DrawInputDisplay();
+            if (!_show) return;
+            float k = Scale;
+            float statusTop = DrawStatus(k);
+            if (TASConfig.Settings.ShowKeyHelp) DrawKeyHelp(k, statusTop);
+            DrawReadout(k);
+            if (_s.Recording) DrawInputDisplay(k);
         }
 
-        private void EnsureStyles()
+        // ── Status panel ────────────────────────────────────────────────
+        private void ModeBadge(out string text, out Color color)
         {
-            float scale = Scale;
-            if (Mathf.Approximately(_cachedScale, scale)) return;
-            _cachedScale = scale;
-
-            int headerSize = Mathf.RoundToInt(22 * scale);
-            int textSize   = Mathf.RoundToInt(18 * scale);
-            int keySize    = Mathf.RoundToInt(17 * scale);
-            int sectionSize= Mathf.RoundToInt(13 * scale);
-
-            _styleHeader = new GUIStyle
-            {
-                fontSize = headerSize,
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.UpperLeft
-            };
-            _styleHeader.normal.textColor = _headerColor;
-
-            _styleText = new GUIStyle
-            {
-                fontSize = textSize,
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.UpperLeft
-            };
-            _styleText.normal.textColor = Color.white;
-
-            _styleKey = new GUIStyle
-            {
-                fontSize = keySize,
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.UpperLeft
-            };
-            _styleKey.normal.textColor = _keyColor;
-
-            _styleSection = new GUIStyle
-            {
-                fontSize = sectionSize,
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.UpperLeft
-            };
-            _styleSection.normal.textColor = _sectionColor;
+            if (_s.Editing)        { text = "EDIT";   color = TASGui.Edit; }
+            else if (_s.Recording) { text = "REC";    color = TASGui.Rec; }
+            else if (_s.Playing)   { text = "REPLAY"; color = TASGui.Play; }
+            else                   { text = "IDLE";   color = TASGui.TextMuted; }
         }
 
-        private void DrawControls()
+        /// <summary>Draws the bottom-left status panel; returns its top edge.</summary>
+        private float DrawStatus(float k)
         {
+            float w = 300f * k, h = 84f * k;
+            float x = PAD, y = Screen.height - h - PAD;
+            var r = new Rect(x, y, w, h);
+            TASGui.Panel(r);
+
+            ModeBadge(out string mode, out Color modeCol);
+            TASGui.Fill(new Rect(x, y, 2f, h), TASGui.Tint(modeCol, 0.8f));
+
+            float cx = x + 12f * k, cy = y + 9f * k;
+            float bh = 20f * k;
+            TASGui.Badge(new Rect(cx, cy + 3f * k, 64f * k, bh), mode, modeCol, Font(11, k));
+            float bx = cx + 70f * k;
+            if (_s.Paused)
+            {
+                TASGui.Badge(new Rect(bx, cy + 3f * k, 58f * k, bh), "PAUSED", TASGui.Pause, Font(11, k));
+                bx += 64f * k;
+            }
+            if (!Mathf.Approximately(_s.SpeedFactor, 1f))
+            {
+                string sp = _s.FastForward ? "×3" : _s.SpeedFactor < 0.2f ? "×0.1" : "×0.3";
+                TASGui.Badge(new Rect(bx, cy + 3f * k, 40f * k, bh), sp, TASGui.Play, Font(11, k));
+            }
+
+            // Tick counter, right-aligned on the first row
+            TASGui.Label(new Rect(x + w - 150f * k, cy, 138f * k, 26f * k), _tickStr, TASGui.Text,
+                         Font(19, k), false, TextAnchor.MiddleRight);
+            cy += 30f * k;
+
+            string runInfo = _s.Rows > 0 ? $"Macro  {_s.Rows} ticks · end {_maxStr}" : "No macro";
+            TASGui.Label(new Rect(cx, cy, w * 0.62f, 18f * k), runInfo, _s.Rows > 0 ? TASGui.TextDim : TASGui.TextMuted, Font(12, k));
+            string saveInfo = _s.HasSavestate ? $"Save @ {_s.SavestateTick}" : "No save";
+            TASGui.Label(new Rect(x + w * 0.6f, cy, w * 0.4f - 12f * k, 18f * k), saveInfo,
+                         _s.HasSavestate ? TASGui.Ok : TASGui.TextMuted, Font(12, k), false, TextAnchor.MiddleRight);
+            cy += 20f * k;
+
+            var st = TASConfig.Settings;
+            TASGui.Label(new Rect(cx, cy, w - 24f * k, 16f * k),
+                         $"[{st.ToggleHelp}] keys   [{st.OpenEditor}] editor   [{st.OpenBindMenu}] settings",
+                         TASGui.TextMuted, Font(12, k));
+            return y;
+        }
+
+        // ── Key list ────────────────────────────────────────────────────
+        private void DrawKeyHelp(float k, float statusTop)
+        {
+            var actions = TASConfig.Actions;
+            int sections = 0;
+            string last = null;
+            foreach (var a in actions) if (a.Section != last) { sections++; last = a.Section; }
+
+            float lineH = 18f * k, secH = 22f * k;
+            float w = 300f * k;
+            float h = 10f * k + sections * secH + actions.Length * lineH + 6f * k;
+            float x = PAD, y = statusTop - h - 8f * k;
+            TASGui.Panel(new Rect(x, y, w, h));
+
+            float cx = x + 12f * k, cy = y + 8f * k;
+            last = null;
             var s = TASConfig.Settings;
-            float sc = Scale;
-            float lineH = BASE_LINE_H * sc;
-            float sectionH = BASE_SECTION_H * sc;
-            float ctrlW = BASE_CTRL_W * sc;
-            float pad = BASE_PAD;
-            float totalH = 35f * sc  // header + tick + state
-                         + lineH * 2             // Recorded + Reset Tick (under the tick counter)
-                         + sectionH + lineH * 2  // savestate section
-                         + sectionH + lineH * 3  // macro section (Record, Play, Edit)
-                         + sectionH + lineH * 5  // playback section (Pause, FrameAdv, Rewind, FastFwd, SlowMo)
-                         + sectionH + lineH * 2   // ui section
-                         + 14f * sc;              // padding
-
-            float x = pad;
-            float y = Screen.height - totalH - pad;
-
-            DrawBox(x, y, ctrlW, totalH);
-
-            float cx = x + 12f * sc;
-            float cy = y + 10f * sc;
-
-            // ── Header ──
-            _styleHeader.normal.textColor = _headerColor;
-            GUI.Label(new Rect(cx, cy, ctrlW - 20f * sc, 26f * sc), "  Flipping is Hard TAS", _styleHeader);
-            cy += 30f * sc;
-
-            // Tick + State
-            _styleText.normal.textColor = _savedColor;
-            GUI.Label(new Rect(cx, cy, 190f * sc, lineH), $"  TICK: {_currentTick}", _styleText);
-
-            string stateStr;
-            Color stateColor;
-            if (_isEditMode)
+            foreach (var a in actions)
             {
-                stateStr = _isPaused ? "✎ EDIT — FRAME-STEP" : "✎ EDIT (REC)";
-                stateColor = new Color(1f, 0.5f, 0f, 1f);
+                if (a.Section != last)
+                {
+                    last = a.Section;
+                    TASGui.Label(new Rect(cx, cy + 4f * k, w - 24f * k, 16f * k), a.Section, TASGui.TextMuted, Font(11, k), true);
+                    cy += secH;
+                }
+                var bind = a.Get(s);
+                TASGui.Label(new Rect(cx, cy, w * 0.6f, lineH), a.Label, TASGui.TextDim, Font(12, k));
+                TASGui.Label(new Rect(x + w * 0.55f, cy, w * 0.45f - 12f * k, lineH), bind.ToString(),
+                             bind.IsBound ? TASGui.Text : TASGui.TextMuted, Font(12, k), false, TextAnchor.MiddleRight);
+                cy += lineH;
             }
-            else if (_isRecording)
-            {
-                stateStr = _isPaused ? "● REC — FRAME-STEP" : "● REC";
-                stateColor = _recColor;
-            }
-            else if (_isPlaying && _isPaused)
-            {
-                stateStr = "⏸ PAUSED (REPLAY)"; stateColor = _pauseColor;
-            }
-            else if (_isPlaying && _isSlowMoBoost)
-            {
-                stateStr = "▶ REPLAY ×0.3"; stateColor = _playColor;
-            }
-            else if (_isPlaying && _isSlowMo)
-            {
-                stateStr = "▶ REPLAY ×0.1"; stateColor = _playColor;
-            }
-            else if (_isPlaying && _isFastForward)
-            {
-                stateStr = "⏩ REPLAY ×3"; stateColor = new Color(0.2f, 0.8f, 1f, 1f);
-            }
-            else if (_isPlaying)
-            {
-                stateStr = "▶ REPLAY"; stateColor = _playColor;
-            }
-            else if (_isPaused)
-            {
-                stateStr = "⏸ PAUSED"; stateColor = _pauseColor;
-            }
-            else if (_isSlowMoBoost)
-            {
-                stateStr = "▶ SLOW ×0.3"; stateColor = _playColor;
-            }
-            else if (_isSlowMo)
-            {
-                stateStr = "▶ SLOW ×0.1"; stateColor = _playColor;
-            }
-            else
-            {
-                stateStr = "■ IDLE"; stateColor = _dimColor;
-            }
-
-            _styleText.normal.textColor = stateColor;
-            GUI.Label(new Rect(cx + 180f * sc, cy, ctrlW - 200f * sc, 20f * sc), stateStr, _styleText);
-            cy += lineH;
-
-            // Recorded + Reset Tick: right under the tick counter (per user request)
-            if (_recordedCount > 0)
-                DrawKeySingle(cx, ref cy, $"Recorded: {_recordedCount} ticks", _savedColor, ctrlW, lineH);
-            else
-                DrawKeySingle(cx, ref cy, "Recorded: —", _dimColor, ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.ResetTick}] Reset Tick", _dimColor, ctrlW, lineH);
-
-            // ── Savestate ──
-            DrawSectionLabel(cx, ref cy, "SAVESTATE", ctrlW, lineH);
-            DrawKeyRow(cx, ref cy, $"[{s.SavePosition}] Save", $"[{s.Teleport}] Load",
-                _hasSavedPosition ? _savedColor : _dimColor, ctrlW, lineH);
-
-            // ── Macro ──
-            DrawSectionLabel(cx, ref cy, "MACRO", ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.RecordMacro}] Record",
-                _isRecording ? _recColor : (_isPlaying ? new Color(0.6f, 0.2f, 0.2f) : _dimColor), ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.PlayMacro}] Play / Stop",
-                _isEditMode || _isRecording ? new Color(0.6f, 0.2f, 0.2f) : (_isPlaying ? _playColor : _dimColor), ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.EditMacro}] Edit Macro",
-                _isEditMode ? new Color(1f, 0.5f, 0f) : _dimColor, ctrlW, lineH);
-
-            // ── Playback Controls ──
-            DrawSectionLabel(cx, ref cy, "PLAYBACK CONTROLS", ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.Pause}] Pause / Resume",
-                _isPaused ? _pauseColor : _dimColor, ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.FrameAdvance}] Frame Advance  (hold = 10/s)",
-                _isPaused ? _keyColor : _dimColor, ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.RewindTick}] Rewind Tick  (hold = 10/s)",
-                _isEditMode ? new Color(0.6f, 0.2f, 0.2f) : (_isPaused ? _keyColor : _dimColor), ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.FastForward}] Fast Forward ×3",
-                _isFastForward ? new Color(0.2f, 0.8f, 1f) : _dimColor, ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.SlowMo}] Slow Motion (×0.1)",
-                _isSlowMo ? _playColor : _dimColor, ctrlW, lineH);
-            if (_isSlowMo)
-            {
-                Color boostCol = _isSlowMoBoost ? new Color(1f, 0.55f, 0.1f) : _dimColor;
-                DrawKeySingle(cx, ref cy, $"  └ [{s.SlowMoBoost}] Boost (×0.3)", boostCol, ctrlW, lineH);
-            }
-
-            // ── UI ──
-            DrawSectionLabel(cx, ref cy, "INTERFACE", ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.OpenBindMenu}] Open Settings", _dimColor, ctrlW, lineH);
-            DrawKeySingle(cx, ref cy, $"[{s.OpenEditor}] Open TAS Editor", _dimColor, ctrlW, lineH);
         }
 
-        private void DrawSectionLabel(float x, ref float y, string title, float ctrlW, float lineH)
+        // ── Position / speed readout ────────────────────────────────────
+        private void DrawReadout(float k)
         {
-            GUI.color = _sectionColor;
-            GUI.Label(new Rect(x + 2f, y, ctrlW - 20f, 18f * Scale), $"— {title} —", _styleSection);
-            GUI.color = Color.white;
-            y += sectionSpacing;
+            float w = 220f * k, lineH = 20f * k, h = 3 * lineH + 14f * k;
+            float x = Screen.width - w - PAD, y = PAD;
+            TASGui.Panel(new Rect(x, y, w, h));
+
+            float cx = x + 12f * k, cy = y + 7f * k, vw = w - 24f * k;
+            ReadoutLine(cx, cy, vw, lineH, "SPEED", _speedStr, k); cy += lineH;
+            ReadoutLine(cx, cy, vw, lineH, "HEIGHT", _heightStr, k); cy += lineH;
+            ReadoutLine(cx, cy, vw, lineH, "XYZ", _xyzStr, k);
         }
 
-        private float sectionSpacing => 19f * Scale;
-
-        private void DrawKeyRow(float x, ref float y, string left, string right, Color col, float ctrlW, float lineH)
+        private static void ReadoutLine(float x, float y, float w, float h, string label, string value, float k)
         {
-            _styleKey.normal.textColor = col;
-            float halfW = (ctrlW - 20f) / 2f;
-            GUI.Label(new Rect(x + 4f, y, halfW, 20f * Scale), left, _styleKey);
-            GUI.Label(new Rect(x + 4f + halfW, y, halfW, 20f * Scale), right, _styleKey);
-            GUI.color = Color.white;
-            y += lineH;
+            TASGui.Label(new Rect(x, y, w, h), label, TASGui.TextMuted, Font(12, k), true);
+            TASGui.Label(new Rect(x, y, w, h), value, TASGui.Text, Font(13, k), false, TextAnchor.MiddleRight);
         }
 
-        private void DrawKeySingle(float x, ref float y, string text, Color col, float ctrlW, float lineH)
+        // ── Input display (recording / Edit Mode) ───────────────────────
+        private void DrawInputDisplay(float k)
         {
-            _styleKey.normal.textColor = col;
-            GUI.Label(new Rect(x + 4f, y, ctrlW - 20f, 20f * Scale), text, _styleKey);
-            GUI.color = Color.white;
-            y += lineH;
-        }
+            var pins = _s.Pins;
+            bool pinned = pins.Active;
+            // What the next recorded tick will contain: the pins when set, else live input.
+            int mx = pinned ? pins.MoveX : _s.LiveMoveX;
+            int my = pinned ? pins.MoveY : _s.LiveMoveY;
+            bool jump = pinned ? pins.Jump : _s.LiveJump;
+            bool inter = pinned ? pins.Interact : _s.LiveInteract;
 
-        private void DrawCoords()
-        {
-            float sc = Scale;
-            float coordW = BASE_COORD_W * sc;
-            float coordH = BASE_COORD_H * sc;
-            float pad = BASE_PAD;
-            float x = Screen.width - coordW - pad;
-            float y = pad;
+            float box = 30f * k, gap = 4f * k, pad = 10f * k, titleH = 18f * k;
+            float wideW = box * 1.9f;
+            float gridW = box * 3 + gap * 2;
+            float w = pad * 2 + gridW + gap * 3 + wideW;
+            float h = pad + titleH + 6f * k + box * 2 + gap + pad;
+            float x = (Screen.width - w) / 2f;
+            float hintH = _s.Paused ? 22f * k : 0f;
+            float y = Screen.height - h - hintH - PAD;
 
-            DrawBox(x, y, coordW, coordH);
+            TASGui.Panel(new Rect(x, y, w, h));
+            float cx = x + pad, cy = y + pad;
+            TASGui.Label(new Rect(cx, cy, w - pad * 2, titleH), "NEXT INPUT", TASGui.TextMuted, Font(11, k), true);
+            if (pinned)
+                TASGui.Badge(new Rect(x + w - pad - 58f * k, cy, 58f * k, titleH), "PINNED", TASGui.Edit, Font(11, k));
+            cy += titleH + 6f * k;
 
-            float cx = x + 12f * sc;
-            float cy = y + 10f * sc;
-            float labelH = 24f * sc;
-
-            _styleText.normal.textColor = Color.white;
-            GUI.Label(new Rect(cx, cy, coordW - 24f * sc, labelH), _cachedSpeedStr, _styleText);
-            cy += labelH;
-            GUI.Label(new Rect(cx, cy, coordW - 24f * sc, labelH), _cachedHeightStr, _styleText);
-            cy += labelH;
-            GUI.Label(new Rect(cx, cy, coordW - 24f * sc, labelH), _cachedCoordsStr, _styleText);
-        }
-
-        // ── Live input display (frame-by-frame TAS) ──────────────────────
-        private void DrawInputDisplay()
-        {
-            var s = TASConfig.Settings;
-            float sc = Scale;
-            float box = 30f * sc;
-            float gap = 4f * sc;
-            float padIn = 8f * sc;
-            float titleH = 18f * sc;
-            float vgap = 8f * sc;                    // clear gap between sections
-            bool frameStep = _isPaused;              // paused while recording/editing = frame-step
-            float hintH = frameStep ? 20f * sc : 0f;
-
-            float gridW = box * 3 + gap * 2;         // A S D row
-            float jumpW = box * 1.7f;
-            float panelW = padIn * 2 + gridW + gap * 2 + jumpW;
-
-            // Panel contains only title + the two key rows. The hint is drawn OUTSIDE,
-            // below the box, so it can never be clipped by the panel edge.
-            float rowsH = box * 2 + gap;
-            float panelH = padIn + titleH + vgap + rowsH + padIn;
-
-            float x = Screen.width / 2f - panelW / 2f;
-            float totalH = panelH + (frameStep ? vgap + hintH : 0f);
-            float y = Screen.height - totalH - 20f;
-
-            DrawBox(x, y, panelW, panelH);
-
-            float cx = x + padIn;
-            float cy = y + padIn;
-
-            _styleSection.normal.textColor = _sectionColor;
-            GUI.Label(new Rect(cx, cy, panelW - padIn * 2, titleH), "— INPUT (next tick) —", _styleSection);
-            GUI.color = Color.white;
-            cy += titleH + vgap;
-
-            // Movement: W centered over A/S/D (sbyte range -127..127, >16 = pressed)
-            DrawKeyBox(cx + box + gap, cy, box, "W", _liveMoveY > 16);
+            Color on = pinned ? TASGui.Edit : TASGui.Ok;
+            KeyBox(new Rect(cx + box + gap, cy, box, box), "W", my > 16, on, k);
             float row2 = cy + box + gap;
-            DrawKeyBox(cx,                 row2, box, "A", _liveMoveX < -16);
-            DrawKeyBox(cx + box + gap,     row2, box, "S", _liveMoveY < -16);
-            DrawKeyBox(cx + (box + gap)*2, row2, box, "D", _liveMoveX > 16);
+            KeyBox(new Rect(cx, row2, box, box), "A", mx < -16, on, k);
+            KeyBox(new Rect(cx + box + gap, row2, box, box), "S", my < -16, on, k);
+            KeyBox(new Rect(cx + (box + gap) * 2, row2, box, box), "D", mx > 16, on, k);
 
-            // Jump + Interact to the right
-            float rx = cx + gridW + gap * 2;
-            DrawKeyBox(rx, cy,   jumpW, box, "JUMP", _liveJump);
-            DrawKeyBox(rx, row2, jumpW, box, "INT",  _liveInteract);
+            float rx = cx + gridW + gap * 3;
+            KeyBox(new Rect(rx, cy, wideW, box), "JUMP", jump, on, k);
+            KeyBox(new Rect(rx, row2, wideW, box), "INT", inter, on, k);
 
-            // Hint OUTSIDE/below the box.
-            if (frameStep)
+            if (_s.Paused)
             {
-                _styleKey.normal.textColor = _keyColor;
-                GUI.Label(new Rect(x, y + panelH + vgap, panelW + 240f * sc, hintH),
-                          $"FRAME-STEP: hold keys · [{s.FrameAdvance}] +1 · [{s.RewindTick}] back", _styleKey);
-                GUI.color = Color.white;
+                var st = TASConfig.Settings;
+                TASGui.Label(new Rect(x - 120f * k, y + h + 4f * k, w + 240f * k, 18f * k),
+                             $"Hold keys or pin inputs in the editor   [{st.FrameAdvance}] +1 tick   [{st.RewindTick}] back",
+                             TASGui.TextDim, Font(12, k), false, TextAnchor.MiddleCenter);
             }
         }
 
-        private void DrawKeyBox(float x, float y, float w, float h, string label, bool active)
+        private static void KeyBox(Rect r, string label, bool active, Color onColor, float k)
         {
-            Color orig = GUI.color;
-            // Solid fill (DrawTexture on the white texture) — guarantees a visible colour,
-            // unlike tinting GUI.skin.box which rendered near-black here. Pressed = the TICK
-            // counter's green; released = dim grey.
-            GUI.color = active ? _savedColor : new Color(0.22f, 0.22f, 0.22f, 0.85f);
-            GUI.DrawTexture(new Rect(x, y, w, h), Texture2D.whiteTexture);
-            GUI.color = Color.white;
-
-            var prevAlign = _styleKey.alignment;
-            var prevCol = _styleKey.normal.textColor;
-            _styleKey.alignment = TextAnchor.MiddleCenter;
-            _styleKey.normal.textColor = active ? Color.black : new Color(0.8f, 0.8f, 0.8f);
-            GUI.Label(new Rect(x, y, w, h), label, _styleKey);
-            _styleKey.alignment = prevAlign;
-            _styleKey.normal.textColor = prevCol;
-            GUI.color = orig;
-        }
-
-        private void DrawKeyBox(float x, float y, float size, string label, bool active)
-            => DrawKeyBox(x, y, size, size, label, active);
-
-        private void DrawBox(float x, float y, float w, float h)
-        {
-            Color orig = GUI.color;
-
-            GUI.color = _bgColor;
-            GUI.Box(new Rect(x, y, w, h), GUIContent.none);
-
-            float b = 2f;
-            GUI.color = _borderColor;
-            GUI.Box(new Rect(x,         y,         w, b), GUIContent.none);
-            GUI.Box(new Rect(x,         y + h - b, w, b), GUIContent.none);
-            GUI.Box(new Rect(x,         y,         b, h), GUIContent.none);
-            GUI.Box(new Rect(x + w - b, y,         b, h), GUIContent.none);
-
-            GUI.color = orig;
+            TASGui.Fill(r, new Color(0.14f, 0.147f, 0.167f, 0.92f));
+            if (active)
+            {
+                TASGui.Fill(r, TASGui.Tint(onColor, 0.24f));
+                TASGui.Fill(new Rect(r.x, r.yMax - 2f, r.width, 2f), TASGui.Tint(onColor, 0.85f));
+            }
+            TASGui.Outline(r, TASGui.Border);
+            TASGui.Label(r, label, active ? onColor : TASGui.TextMuted, Font(12, k), active, TextAnchor.MiddleCenter);
         }
     }
 }

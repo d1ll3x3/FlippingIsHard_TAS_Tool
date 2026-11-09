@@ -1,67 +1,57 @@
-# Setup script to find and copy BepInEx and Unity DLLs
-# Works across different Steam library locations and game versions.
+# Copies the game's BepInEx interop DLLs into lib\ so the project can build.
 #
 # Usage:
-#   .\setup-libs.ps1                       # auto-detect the installed game
-#   .\setup-libs.ps1 -GamePath "X:\...\Flipping is Hard"   # build against a specific install
+#   .\setup-libs.ps1                                   # auto-detect the installed game
+#   .\setup-libs.ps1 -GamePath "X:\...\Flipping is Hard"
 #
-# NOTE: the copied interop DLLs are only build-time references. The game's input API is
-# identical across versions, so the resulting .dll works on every version — provided each
-# player's BepInEx has REGENERATED its interop for their game version (see README:
-# "Updating after a game patch"). A stale interop crashes at PlayerInputHandler.IsHeld.
+# The interop DLLs are build-time references only. Build against the version you play:
+# the full game ("Flipping is Hard") is preferred over the demo when both are installed.
+# After a game update, BepInEx must regenerate its interop (see README) and you should
+# re-run this script.
 param(
     [string]$GamePath
 )
 
-Write-Host "Setting up BepInEx TAS Tool build environment..." -ForegroundColor Cyan
-Write-Host ""
+$ErrorActionPreference = "Stop"
+Set-Location $PSScriptRoot
 
-# Create lib folder
-if (-not (Test-Path "lib")) {
-    New-Item -ItemType Directory -Path "lib" | Out-Null
-}
-
-# Find game installation. The product folder is "Flipping is Hard Demo" on the demo and
-# "Flipping is Hard" once the demo tag is dropped — search both, plus any "- copia" variants.
-$gamePath = $null
+# NOTE: PowerShell variable names are case-insensitive - never reuse "$gamePath" here,
+# it IS the -GamePath parameter.
+$found = $null
 if ($GamePath) {
-    if (Test-Path "$GamePath\BepInEx") { $gamePath = $GamePath }
-    else { Write-Host "ERROR: no BepInEx under -GamePath '$GamePath'" -ForegroundColor Red; exit 1 }
+    if (-not (Test-Path (Join-Path $GamePath "BepInEx\interop"))) {
+        Write-Host "ERROR: no BepInEx\interop under '$GamePath'." -ForegroundColor Red
+        Write-Host "Install BepInEx 6 IL2CPP there and launch the game once."
+        exit 1
+    }
+    $found = $GamePath
 }
 else {
-    $drives = @("C","D","E","F","G","H","I","J","K")
-    $names  = @("Flipping is Hard Demo", "Flipping is Hard")
-    $roots  = @("SteamLibrary\steamapps\common",
-                "Program Files\Steam\steamapps\common",
-                "Program Files (x86)\Steam\steamapps\common")
-    $candidates = @()
-    foreach ($d in $drives) { foreach ($r in $roots) { foreach ($n in $names) {
-        $candidates += "$($d):\$r\$n"
-    } } }
-
-    foreach ($path in $candidates) {
-        if (Test-Path "$path\BepInEx\interop") { $gamePath = $path; break }
+    $names = @("Flipping is Hard", "Flipping is Hard Demo")
+    $roots = @("SteamLibrary\steamapps\common",
+               "Program Files\Steam\steamapps\common",
+               "Program Files (x86)\Steam\steamapps\common")
+    $drives = Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root }
+    :search foreach ($n in $names) {
+        foreach ($d in $drives) {
+            foreach ($r in $roots) {
+                $candidate = Join-Path $d (Join-Path $r $n)
+                if (Test-Path (Join-Path $candidate "BepInEx\interop")) { $found = $candidate; break search }
+            }
+        }
     }
 }
 
-if (-not $gamePath) {
-    Write-Host "ERROR: Could not find game installation automatically." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Please make sure:" -ForegroundColor Yellow
-    Write-Host "  1. BepInEx IL2CPP is installed in your game folder"
-    Write-Host "  2. The game is in a standard Steam library location"
-    Write-Host "  3. You have run the game at least once so BepInEx generates the interop DLLs"
-    Write-Host ""
-    Write-Host "If your game is elsewhere, edit this script to add your path."
+if (-not $found) {
+    Write-Host "ERROR: could not find the game with BepInEx interop generated." -ForegroundColor Red
+    Write-Host "Run the game once with BepInEx installed, or pass -GamePath."
     exit 1
 }
 
-Write-Host "Found game at: $gamePath" -ForegroundColor Green
-Write-Host ""
+Write-Host "Using game at: $found" -ForegroundColor Green
+New-Item -ItemType Directory -Force -Path "lib" | Out-Null
 
-Write-Host "Copying Game and Unity Interop DLLs..." -ForegroundColor Cyan
-
-$dllsToCopy = @(
+$dlls = @(
     "Assembly-CSharp.dll",
     "EHS.Core.Components.dll",
     "FishNet.Runtime.dll",
@@ -76,28 +66,21 @@ $dllsToCopy = @(
     "UnityEngine.TextRenderingModule.dll"
 )
 
-$interopPath = "$gamePath\BepInEx\interop"
-if (-not (Test-Path $interopPath)) {
-    Write-Host "ERROR: BepInEx\interop folder not found." -ForegroundColor Red
-    Write-Host "You must launch the game at least once after installing BepInEx so it can generate the interop assemblies."
-    exit 1
-}
-
-$success = $true
-foreach ($dll in $dllsToCopy) {
-    $sourcePath = "$interopPath\$dll"
-    if (Test-Path $sourcePath) {
-        Copy-Item $sourcePath "lib\" -Force
-        Write-Host "  OK: $dll copied" -ForegroundColor Green
+$interop = Join-Path $found "BepInEx\interop"
+$missing = 0
+foreach ($dll in $dlls) {
+    $src = Join-Path $interop $dll
+    if (Test-Path $src) {
+        Copy-Item $src "lib\" -Force
+        Write-Host "  OK  $dll"
     } else {
-        Write-Host "  ERROR: $dll not found in interop folder" -ForegroundColor Red
-        $success = $false
+        Write-Host "  MISSING  $dll" -ForegroundColor Red
+        $missing++
     }
 }
 
-Write-Host ""
-if ($success) {
-    Write-Host "Setup complete! You can now build the project." -ForegroundColor Green
-} else {
-    Write-Host "Setup finished with errors. Some DLLs are missing." -ForegroundColor Yellow
+if ($missing -gt 0) {
+    Write-Host "Done with $missing missing DLL(s) - the build will fail." -ForegroundColor Yellow
+    exit 1
 }
+Write-Host "Done. Build with build.bat or 'dotnet build -c Release'." -ForegroundColor Green

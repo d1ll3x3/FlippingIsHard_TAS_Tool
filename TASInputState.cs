@@ -2,8 +2,30 @@ using UnityEngine;
 
 namespace FlippingIsHardTAS
 {
+    /// <summary>
+    /// Inputs pinned from the editor while recording / in Edit Mode. When any pin is set,
+    /// the pins fully define move/jump/interact for each recorded tick (written into the
+    /// game's rawData), so frame-by-frame input needs no held keys. Mouse look stays live.
+    /// </summary>
+    public struct InputPins
+    {
+        public sbyte MoveX, MoveY;
+        public bool Jump, Interact;
+
+        public bool Active => MoveX != 0 || MoveY != 0 || Jump || Interact;
+
+        public static InputPins FromState(TASInputState s) => new InputPins
+        {
+            MoveX = s.MoveXRaw, MoveY = s.MoveYRaw, Jump = s.Jump, Interact = s.Interact,
+        };
+    }
+
     public struct TASInputState
     {
+        // PlayerButtons.ButtonType bits (EHS) for the two buttons the TAS records.
+        public const int BTN_JUMP = 4;
+        public const int BTN_INTERACT = 8;
+
         public Vector2 Move;
         public Vector2 Look;
         public Quaternion CameraRotation;
@@ -22,9 +44,8 @@ namespace FlippingIsHardTAS
         public float CameraPan;
         public float CameraTilt;
 
-        // Exact rawData sbytes the game consumed this tick. Re-injecting these bit-identical
-        // values during robot resim avoids the float→sbyte round-trip quantization error
-        // that made resims diverge from the original run within a few ticks.
+        // Exact rawData sbytes the game consumed this tick (re-injected verbatim on replay,
+        // avoiding the float→sbyte round-trip quantization error).
         public sbyte MoveXRaw;
         public sbyte MoveYRaw;
         public sbyte LookXRaw;

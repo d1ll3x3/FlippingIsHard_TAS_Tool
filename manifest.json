@@ -1,8 +1,8 @@
 {
-  "name": "Flipping is Hard Trainer",
-  "author": "Converted from C++ trainer",
-  "description": "BepInEx plugin for Flipping is Hard Demo with position save/restore and fly mode",
-  "version_number": "1.0.0",
+  "name": "Flipping_is_Hard_TAS",
+  "author": "d1ll3x3",
+  "description": "TAS tool for Flipping is Hard: bit-perfect record & replay, frame advance, Edit Mode with pinned inputs, piano-roll editor, savestates.",
+  "version_number": "2.1.0",
   "dependencies": [
     "BepInEx-BepInExPack-6.0.0-be.755"
   ],

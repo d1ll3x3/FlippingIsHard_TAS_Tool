@@ -1,138 +1,120 @@
 # Flipping is Hard — TAS Tool
 
-A **BepInEx** mod for *Flipping is Hard (Demo)* that adds full TAS (Tool-Assisted Speedrun) functionality: input recording & bit-perfect replay, savestates, live edit mode, a frame-by-frame piano-roll editor, frame advance, slow-motion, rewind, and a real-time overlay HUD.
+A **BepInEx 6 (IL2CPP)** mod for *Flipping is Hard* that turns the game into a TAS workbench: bit-perfect record & replay, frame advance, rewind, savestates, an **Edit Mode** with pinned per-frame inputs, and a piano-roll **editor** with timeline surgery.
+
+Works on the full game and the demo (the game's input API is identical across versions — see [Updating after a game patch](#updating-after-a-game-patch)).
 
 ---
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| 🎥 **Input Recording** | Records every physics tick: movement, look, camera pose, button edges and full rigidbody state |
-| ▶ **Deterministic Replay** | Replays a run by injecting the recorded state before each physics tick — bit-perfect, never desyncs |
-| 💾 **Savestates** | Save and load player position / velocity at any moment |
-| ✂️ **Edit Mode** | Drop into a run at any tick (`F8`) and navigate frame-by-frame non-destructively; fork the run from any frame by holding a game key while advancing, or by editing a cell in the editor |
-| 🎹 **TAS Editor (piano roll)** | Frame-by-frame editor (`T`): one row per tick, scrub/step bit-perfect, timeline surgery, per-tick input editing, camera aiming, Save/Load |
-| 🧩 **Timeline Surgery** | Insert / Delete / Copy / Paste frames in the editor to trim, splice and rearrange a run |
-| 🎯 **Camera Aiming** | Edit Pan/Tilt at a tick and the camera holds that orientation from there on (until you change it again) |
-| ⏪ **Rewind** | Go back 1 tick during paused replay (`,`) — hold for 10/sec |
-| ⏩ **Fast Forward ×3** | Toggle 3× speed during replay to quickly reach edit points |
-| ⏸ **Pause / Frame Advance** | Pause time and step exactly 1 physics tick per press; hold for 10 ticks/sec |
-| 🐢 **Slow Motion** | Run the game at ×0.1 speed; hold boost for ×0.3 |
-| 🔄 **Reset Tick** | Reset the tick counter to 0 (F5) |
-| 📁 **Macro Save & Load** | Save your recorded TAS runs to disk (`.tas` files) and load them later from the editor's FILE section |
-| 🏁 **Auto-stop on game end** | Recording/playback stops when the run finishes and the editor opens so you can save |
-| 🔄 **Quick Restart Hook** | Full compatibility with the game's Quick Restart. Auto-pauses at tick 0 |
-| 🖥 **HUD Overlay** | Always-on display of state, tick counter, recorded length, speed, position and all keybinds |
-| ⌨ **Configurable Keybinds** | In-game menu (`B`) to remap every action |
+| | |
+|---|---|
+| 🎥 **Recording** | Every physics tick: movement, look, buttons, camera pose and orbit, full rigidbody state |
+| ▶ **Bit-perfect replay** | The recorded state is injected before each physics step — the replay never desyncs |
+| ⏸ **Frame advance / rewind** | Step 1 tick at a time (hold for 10/s), step back through any recorded frame |
+| ✎ **Edit Mode** | Navigate a run frame-by-frame without losing anything; fork it from any frame with held keys or **pinned inputs** |
+| 📌 **Input pins** | Toggle W/A/S/D/Jump/Interact (or exact analog values) in the editor; every frame-advance records them — no need to hold keys |
+| 🎹 **Piano-roll editor** | One row per tick with inputs, camera, speed and height; click to seek, Shift+click to select ranges |
+| 🧩 **Timeline surgery** | Insert / Delete / Copy / full-state Paste / Trim, with 30-step undo |
+| 🎯 **Camera aim** | Set Pan/Tilt from a tick onward |
+| 💾 **Savestates** | Save/load the player anywhere; inside a recording, loading jumps to that frame |
+| 📁 **Macro files** | Save/load `.tas` files from a file list (double-click to load); atomic writes, unsaved-changes guard, automatic backup before the first edit |
+| 🐢 **Speed control** | ×0.1 slow motion (hold boost for ×0.3), ×3 fast forward |
+| 🔄 **Quick Restart aware** | Pauses at tick 0 once the level has reloaded; the macro is kept |
+| 🏁 **Run end** | Recording stops when the run finishes and the editor opens so you can save |
+| 🖥 **Compact HUD** | Mode, tick, macro length, savestate; key list on demand (`F1`); live input display while recording |
+| ⌨ **Rebindable** | Every action, with conflict detection (`B`) |
 
 ---
 
-## Edit Mode workflow
+## Workflow
 
-This is where you actually edit a run. Enter with `F8` (or **Edit here** in the editor) — the recording is preserved.
+1. **Record** — Quick Restart (the TAS holds at tick 0), press `F9`, unpause with `F11` (or frame-advance with `.`). `F9` again stops.
+2. **Watch** — `F10` replays from the recording start. With *Pause at macro end* on (default), the replay stops on its last frame.
+3. **Fix a section** — pause the replay where it goes wrong and press `F8` (Edit Mode), or click the tick in the editor and press **Edit here**.
+   - `.` / `,` with no game input step through the recording — **nothing is changed**.
+   - Hold a game key (or pin inputs in the editor) and press `.` → **fork**: everything after this frame is dropped and the new frame is recorded live. Keep stepping (or unpause) to record the rest.
+   - In the editor, clicking a **J** / **I** cell does this for you: Edit Mode on the frame before, with that frame's inputs pinned and the button toggled. Press `.` to record it.
+4. **Save** — editor → FILES → name → **Save** (`Ctrl+S`).
 
-| Action | What happens |
-|--------|-------------|
-| `.` (advance, no game key held) | Step forward through recorded frames — **non-destructive**, nothing is changed |
-| `,` (rewind) | Step back — **non-destructive** |
-| Hold `W/A/S/D` / `Space` / `E` + press `.` | **Fork**: discards everything after the current frame and starts recording your live input from here |
-| Edit a cell in the editor table (Move / Jump / Interact) | **Fork**: same as above — recording continues from that tick |
+### Why forks instead of editing inputs in place
 
-> In plain **Replay** (Play + Pause), advance/rewind navigate the recording without forking. Holding game keys there does nothing.
+This game's physics + FishNet prediction + its internal *stuck/slippery* state are not deterministic enough to recompute a run from edited inputs — resimulation drifts within a few ticks. The replay is perfect precisely because it does **not** simulate: it injects the recorded state. So input changes are made the way you'd TAS any non-deterministic game: go to the frame, change the input, and re-record live from there. Timeline surgery (insert/delete/paste/trim) works on recorded states directly and plays back exactly, with a position seam at a splice.
+
+---
+
+## Keys
+
+| Action | Default |
+|---|---|
+| Record / Stop | `F9` |
+| Play / Stop | `F10` |
+| Edit Mode (on/off) | `F8` |
+| Reset Tick | `F5` |
+| Pause / Resume | `F11` |
+| Frame Advance (hold = 10/s) | `.` |
+| Rewind Tick (hold = 10/s) | `,` |
+| Fast Forward ×3 | `F6` |
+| Slow Motion ×0.1 | `F12` |
+| Slow-Mo Boost ×0.3 (hold) | `E` |
+| Save State / Load State | `Shift+R` / `R` |
+| TAS Editor | `T` |
+| Settings | `B` |
+| Key list on the HUD | `F1` |
+
+**Editor shortcuts:** `Ctrl+Z` / `Ctrl+Y` undo/redo · `Ctrl+C` / `Ctrl+V` copy/paste frames · `Del` delete selection · `Ins` insert frames · `↑` `↓` `PgUp` `PgDn` `Home` `End` move (Shift extends the selection) · `Ctrl+S` save.
+
+TAS hotkeys are ignored while the game's own pause/customization menu is open.
 
 ---
 
 ## Installation
 
-1. Install **BepInEx 6** (IL2CPP) for *Flipping is Hard*
-2. Grab the latest `FlippingIsHardTAS.dll` from [Releases](../../releases)
-3. Create a folder named `FlippingIsHardTAS` inside your `BepInEx/plugins/` directory.
-4. Drop `FlippingIsHardTAS.dll` into the new folder.
-5. Launch the game — the HUD appears immediately.
+1. Install **BepInEx 6 IL2CPP** (bleeding edge, be.755 or newer) for *Flipping is Hard* and launch the game once.
+2. Get `FlippingIsHardTAS.dll` from [Releases](../../releases).
+3. Put it in `BepInEx/plugins/FlippingIsHardTAS/`.
+4. Launch the game — the HUD appears once you're in a level.
 
-### Folder Structure
 ```text
-Flipping is Hard Demo/BepInEx/
+Flipping is Hard/BepInEx/
 ├── config/
-│   └── com.flippingishard.tas.json
+│   └── com.flippingishard.tas.json        (keybinds + options)
 └── plugins/
     └── FlippingIsHardTAS/
         ├── FlippingIsHardTAS.dll
-        └── Macros/
-            └── (your saved .tas macro files)
+        └── Macros/                         (your .tas files)
 ```
 
 ---
 
-## Default Keybinds
+## Building from source
 
-| Action | Key |
-|--------|-----|
-| Save Position | `Shift + R` |
-| Load Position | `R` |
-| Record Macro | `F9` |
-| Play Macro | `F10` |
-| Edit Mode | `F8` |
-| Pause / Resume | `F11` |
-| Frame Advance | `.` (hold = 10/s) |
-| Rewind Tick | `,` (hold = 10/s) |
-| Reset Tick | `F5` |
-| Fast Forward ×3 | `F6` |
-| Slow Motion (×0.1) | `F12` |
-| Slow-Mo Boost (×0.3) | `E` (hold while slow-mo active) |
-| Open Settings | `B` |
-| Open TAS Editor | `T` |
+Requirements: .NET SDK 6+, the game with BepInEx installed and launched once (so `BepInEx/interop` exists).
 
-All binds are remappable in-game via the **Settings menu** (`B`).
-
----
-
-## Building from Source
-
-**Requirements:** .NET 6, BepInEx 6 IL2CPP, Unity game DLLs referenced in the `.csproj`
-
-```bash
-dotnet build -c Release
+```bat
+setup-libs.bat      :: copies the interop DLLs into lib\ (prefers the full game; pass a path to override)
+build.bat           :: Release build + deploy to the detected game
 ```
 
-Output: `bin/Release/net6.0/FlippingIsHardTAS.dll`
+or `dotnet build -c Release` → `bin/Release/net6.0/FlippingIsHardTAS.dll`.
 
 ---
 
-## How It Works
+## How it works
 
-- **Recording**: Each FishNet physics tick the mod captures a `TASInputState` — move vector, look vector, the exact `rawData` input bytes, button edges, camera pose, and the rigidbody position / rotation / velocity / angular velocity.
-- **Replay**: On `OnPrePhysicsSimulation`, the full recorded state is injected into the Rigidbody *before* PhysX runs, while `GameInputPatch` feeds the recorded inputs at the exact point the game reads them. Because it injects state rather than re-simulating, the replay is **bit-perfect**.
-- **Edit Mode** (`F8`): preserves the full recording and lets you navigate frame-by-frame. Advance without game input = non-destructive replay step. Advance while holding a game key = fork: live recording replaces everything from that frame onward.
-- **Rewind** / **Frame Advance**: while paused, step the recorded run backward/forward one tick at a time (bit-perfect state seek).
-
-### About the editor and "resimulation"
-
-This game's physics + networked prediction (FishNet) and its internal *stuck/slippery* mechanic are **not deterministic enough to recompute** a run from edited inputs — re-simulation drifts and snowballs. The replay is perfect precisely because it *doesn't* simulate. So the editor is built around the replay, the way you'd TAS any non-deterministic game:
-
-- **Play / scrub / step** are bit-perfect (state injection).
-- **Timeline surgery** — Insert, Delete, Copy/Paste of frames — rearranges recorded data and changes what plays back (with a possible position seam at a splice).
-- **Camera aiming** — editing Pan/Tilt holds that orientation from the edited tick onward (the replay renders the camera from the orbital axes).
-- **Per-cell input edits** (Move/Jump/Interact) fork the run — live recording takes over from that tick.
-
-`.tas` files use the `TAS4` format (older `TAS3` / `TAS2` files import fine).
+- **Recording** — each FixedUpdate the mod captures a `TASInputState`: move/look vectors, the exact `rawData` input bytes, button state, camera pose and Cinemachine orbit, and the rigidbody position/rotation/velocity/angular velocity.
+- **Replay** — FishNet's `OnPrePhysicsSimulation` injects the recorded rigidbody state before PhysX runs; `OnPreTick` writes the recorded inputs into `PlayerInputHandler.rawData` so the game's button/animation reads match. No IL2CPP method is Harmony-patched (native detours crashed v0.12), so it survives game updates.
+- **Pins** — while recording, pinned inputs are written into the same `rawData` field before each tick (with correct press/release edges), so the game consumes them like real input.
+- **`.tas` format** — binary `TAS4` (exact input bytes per tick). `TAS3`/`TAS2` files still import. Files are parsed completely before replacing the current macro, and saved via a temp file.
 
 ---
 
 ## Updating after a game patch
 
-The mod's `.dll` is **version-agnostic** — the game's input API (`PlayerInputHandler`,
-`PlayerInputData`, `PlayerButtons`, `Vector2SByte`) has identical signatures across versions,
-so the same build runs on the demo and newer releases.
+The DLL is version-agnostic, but BepInEx's IL2CPP **interop** (`BepInEx/interop/`) is generated from the game's metadata and its method tokens change on every update.
 
-What is **not** version-agnostic is BepInEx's IL2CPP **interop** (`BepInEx/interop/`): it's
-generated from the game's metadata and the internal method tokens shift every game update.
-
-> ⚠️ **After the game updates, let BepInEx regenerate the interop.** Delete the
-> `BepInEx/interop/` folder (or reinstall BepInEx) and launch the game once. If you keep a
-> stale interop from a previous version, the mod will **crash at `PlayerInputHandler.IsHeld` /
-> `WasPressed`** because the old method tokens now point at the wrong native methods.
+> ⚠️ After the game updates, delete `BepInEx/interop/` (or reinstall BepInEx) and launch the game once so it regenerates. A stale interop crashes at `PlayerInputHandler.IsHeld` / `WasPressed`.
 
 ---
 

@@ -1,125 +1,127 @@
 using System;
-using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 namespace FlippingIsHardTAS
 {
+    /// <summary>
+    /// Locates and caches the local player and its components. Lookups that fail are
+    /// throttled so an empty scene doesn't search every frame.
+    /// </summary>
     public class GameObjectFinder
     {
-        // Cached references
         private GameObject _cachedPlayer;
         private Rigidbody _cachedPlayerRigidbody;
+        private EHS.PlayerInputHandler _cachedInputHandler;
+        private EHS.PlayerMovement _cachedMovement;
         private GameObject _cachedCamera;
-        
-        // Tiempo de espera (cooldown) si la bÃºsqueda falla, para no inundar el log ni causar lag
+
         private float _playerSearchCooldown = 0f;
         private float _cameraSearchCooldown = 0f;
         private const float SEARCH_COOLDOWN_DURATION = 2f;
-        
+
         public Rigidbody GetCachedPlayerRigidbody() => _cachedPlayerRigidbody;
-        
-        public Transform FindPlayerTransform()
+
+        public Transform FindPlayerTransform() => FindPlayer()?.transform;
+
+        public EHS.PlayerInputHandler GetInputHandler()
         {
-            var player = FindPlayer();
-            return player?.transform;
+            if (_cachedInputHandler == null && FindPlayer() != null)
+                _cachedInputHandler = _cachedPlayer.GetComponent<EHS.PlayerInputHandler>();
+            return _cachedInputHandler;
         }
-        
-        public Transform FindCameraTransform()
+
+        public EHS.PlayerMovement GetMovement()
         {
-            var camera = FindCamera();
-            return camera?.transform;
+            if (_cachedMovement == null && FindPlayer() != null)
+                _cachedMovement = _cachedPlayer.GetComponent<EHS.PlayerMovement>();
+            return _cachedMovement;
         }
-        
+
         public GameObject FindPlayer()
         {
-            // Return cached player if still valid
             if (_cachedPlayer != null)
                 return _cachedPlayer;
-                
-            // Check cooldown si ha fallado recientemente
+
             if (Time.unscaledTime < _playerSearchCooldown)
                 return null;
-            
-            // Method 1: by tag (fast path; works on v0.11)
+
+            // By tag first (fast path; works on the demo).
             try
             {
-                _cachedPlayer = GameObject.FindWithTag("Player");
-                if (_cachedPlayer != null)
+                var tagged = GameObject.FindWithTag("Player");
+                if (tagged != null)
                 {
-                    _cachedPlayerRigidbody = _cachedPlayer.GetComponent<Rigidbody>();
+                    SetPlayer(tagged);
                     return _cachedPlayer;
                 }
             }
-            catch (Exception) { /* Silent catch */ }
+            catch (Exception ex)
+            {
+                // Throws when the tag isn't defined in this game version — expected, fall through.
+                TASPlugin.WarnOnce("find-player-tag", $"Player tag lookup failed ({ex.Message}); using component lookup.");
+            }
 
-            // Method 2: by component — version-agnostic. The tag/structure changed in v0.12
-            // ("Player not found" with the tag lookup), but the player still carries
-            // EHS.PlayerInputHandler / EHS.PlayerMovement. Find it by those instead.
+            // By component — version-agnostic. The tag changed in v0.12, but the player
+            // still carries EHS.PlayerInputHandler / EHS.PlayerMovement.
             try
             {
                 var handler = UnityEngine.Object.FindObjectOfType<EHS.PlayerInputHandler>();
                 Component comp = handler != null
-                    ? (Component)handler
+                    ? handler
                     : UnityEngine.Object.FindObjectOfType<EHS.PlayerMovement>();
                 if (comp != null)
                 {
-                    _cachedPlayer = comp.gameObject;
-                    _cachedPlayerRigidbody = _cachedPlayer.GetComponent<Rigidbody>()
-                                             ?? _cachedPlayer.GetComponentInParent<Rigidbody>()
-                                             ?? _cachedPlayer.GetComponentInChildren<Rigidbody>();
+                    SetPlayer(comp.gameObject);
                     return _cachedPlayer;
                 }
             }
-            catch (Exception) { /* Silent catch */ }
+            catch (Exception ex)
+            {
+                TASPlugin.WarnOnce("find-player-comp", $"Player component lookup failed: {ex.Message}");
+            }
 
-            // Si llegamos aquÃ­, no lo encontrÃ³, aplicamos cooldown de 2 segundos antes de volver a buscar
             _playerSearchCooldown = Time.unscaledTime + SEARCH_COOLDOWN_DURATION;
-            _cachedPlayerRigidbody = null;
             return null;
         }
-        
+
+        private void SetPlayer(GameObject go)
+        {
+            _cachedPlayer = go;
+            _cachedInputHandler = null;
+            _cachedMovement = null;
+            // The rigidbody may sit on a parent/child depending on the game version.
+            // Explicit Unity null checks: `??` would skip the native-null check.
+            var rb = go.GetComponent<Rigidbody>();
+            if (rb == null) rb = go.GetComponentInParent<Rigidbody>();
+            if (rb == null) rb = go.GetComponentInChildren<Rigidbody>();
+            _cachedPlayerRigidbody = rb;
+        }
+
         public GameObject FindCamera()
         {
-            // Return cached camera if still valid
             if (_cachedCamera != null)
                 return _cachedCamera;
-                
-            // Check cooldown si ha fallado recientemente
+
             if (Time.unscaledTime < _cameraSearchCooldown)
                 return null;
-            
-            // Method 1: by tag
-            try
-            {
-                _cachedCamera = GameObject.FindWithTag("MainCamera");
-                if (_cachedCamera != null)
-                {
-                    return _cachedCamera;
-                }
-            }
-            catch (Exception) { /* Silent catch */ }
 
-            // Method 2: Camera.main — version-agnostic fallback
-            try
+            var main = Camera.main;
+            if (main != null)
             {
-                if (Camera.main != null)
-                {
-                    _cachedCamera = Camera.main.gameObject;
-                    return _cachedCamera;
-                }
+                _cachedCamera = main.gameObject;
+                return _cachedCamera;
             }
-            catch (Exception) { /* Silent catch */ }
 
-            // Si llegamos aquÃ­, no lo encontrÃ³, aplicamos cooldown de 2 segundos antes de volver a buscar
             _cameraSearchCooldown = Time.unscaledTime + SEARCH_COOLDOWN_DURATION;
             return null;
         }
-        
+
         public void ClearCache()
         {
             _cachedPlayer = null;
             _cachedPlayerRigidbody = null;
+            _cachedInputHandler = null;
+            _cachedMovement = null;
             _cachedCamera = null;
             _playerSearchCooldown = 0f;
             _cameraSearchCooldown = 0f;
